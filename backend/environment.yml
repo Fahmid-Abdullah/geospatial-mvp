@@ -1,0 +1,22 @@
+name: geo
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - geopandas
+  - gdal
+  - rasterio
+  - shapely
+  - pyproj
+  - fiona
+  - numpy
+  - pandas
+  - matplotlib
+  - scikit-learn
+  - flask
+  - flask-cors
+  - supabase
+  - pytest
+  - pip
+  - pip:
+      - python-dotenv
