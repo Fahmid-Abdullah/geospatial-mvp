@@ -3,7 +3,6 @@
 import { MapContext } from "@/context/MapContext";
 import { FeatureLayerType, FeatureType, LayerOrderType, LayerType, ProjectType } from "@/types/tableTypes";
 import { ChangeEvent, Dispatch, SetStateAction, useContext, useEffect, useState } from "react"
-import ParseFile from "./parseFile";
 import { DeleteLayer, GetProjectLayerFeatures, UpdateLayer, UpdateLayerOrder, UpdateLayerVisibility } from "@/actions/layerActions";
 import { DeleteFeature, UpdateAllLayerFeatureVisibility, UpdateFeatureVisibility } from "@/actions/featureActions";
 import { toast } from "react-toastify";
@@ -28,6 +27,202 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import React from "react";
 
+type CSVPreviewType = {
+  file: File;
+  headers: string[];
+  previewRows: Record<string, string>[];
+};
+
+type csvParseType = {
+  latCol: string,
+  lonCol: string,
+  includedCols: string
+}
+
+type csvModalProps = {
+  toggleCSVModal: () => void;
+  headers: string[];
+  previewRows: Record<string, string>[];
+  file: File;
+  setStatus: Dispatch<SetStateAction<string>>;
+  toggleUploadModal: () => void;
+  getFeatureLayers: () => void;
+};
+
+const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggleUploadModal, getFeatureLayers }: csvModalProps) => {
+  const mContext = useContext(MapContext); // Get Map Context
+  if (!mContext) return;
+  const [selectedProject, _setSelectedProject] = mContext?.selectedProjectState;
+
+  const [latCol, setLatCol] = useState<string>("");
+  const [lonCol, setLonCol] = useState<string>("");
+  const [includedCols, setIncludedCols] = useState<Set<string>>(
+    new Set(headers)
+  );
+  const [loading, setLoading] = useState(false);
+
+  const toggleColumn = (col: string) => {
+    setIncludedCols(prev => {
+      const next = new Set(prev);
+      next.has(col) ? next.delete(col) : next.add(col);
+      return next;
+    });
+  };
+
+  const parseCSV = async () => {
+    if (!latCol || !lonCol) {
+      toast.error("Please select latitude and longitude columns.");
+      return;
+    }
+
+    setLoading(true);
+
+    try {
+      if (!file) {
+        toast.error("CSV file not found.");
+        return;
+      }
+
+      // Read CSV file as text
+      const text = await file.text();
+
+      // Parse CSV
+      const res = await fetch("/api/csv/process", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          csv_text: text,
+          latCol,
+          lonCol,
+          includedCols: Array.from(includedCols),
+          project_id: selectedProject?.id,
+          fileName: file.name,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        toast.success("CSV uploaded and features inserted successfully!");
+        setStatus("CSV upload completed.");
+        toggleCSVModal();
+        getFeatureLayers();
+        toggleUploadModal();
+      } else {
+        toast.error(data.error || "CSV upload failed.");
+        setStatus("CSV upload failed.");
+      }
+    } catch (err: any) {
+      console.error(err);
+      toast.error("CSV processing error.");
+      setStatus(`Error: ${err.message || err}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center text-black">
+      <div className="w-2/3 bg-white rounded-xl p-6 relative">
+        {/* Close */}
+        <button
+          onClick={toggleCSVModal}
+          disabled={loading}
+          className="absolute top-4 right-4 hover:scale-110 transition"
+        >
+          <i className="fa-solid fa-xmark text-lg" />
+        </button>
+
+        <h2 className="text-xl font-bold mb-4">CSV Preview & Mapping</h2>
+
+        {/* Lat / Lon selectors */}
+        <div className="grid grid-cols-2 gap-4 mb-4">
+          <div>
+            <label className="text-sm text-gray-500">Latitude column</label>
+            <select
+              value={latCol}
+              onChange={e => setLatCol(e.target.value)}
+              className="w-full border rounded px-2 py-1"
+            >
+              <option value="">Select</option>
+              {headers.map(h => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm text-gray-500">Longitude column</label>
+            <select
+              value={lonCol}
+              onChange={e => setLonCol(e.target.value)}
+              className="w-full border rounded px-2 py-1"
+            >
+              <option value="">Select</option>
+              {headers.map(h => (
+                <option key={h} value={h}>{h}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        {/* Column toggles */}
+        <div className="mb-4">
+          <p className="text-sm text-gray-500 mb-2">Columns to keep</p>
+          <div className="grid grid-cols-3 gap-2">
+            {headers.map(col => (
+              <label
+                key={col}
+                className="flex items-center gap-2 text-sm bg-gray-100 p-2 rounded cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  checked={includedCols.has(col)}
+                  onChange={() => toggleColumn(col)}
+                />
+                {col}
+              </label>
+            ))}
+          </div>
+        </div>
+
+        {/* Preview table */}
+        <div className="max-h-40 overflow-auto border rounded mb-4">
+          <table className="w-full text-xs">
+            <thead className="bg-gray-200 sticky top-0">
+              <tr>
+                {headers.map(h => (
+                  <th key={h} className="px-2 py-1 text-left">{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {previewRows.map((row, i) => (
+                <tr key={i} className="odd:bg-gray-50">
+                  {headers.map(h => (
+                    <td key={h} className="px-2 py-1 truncate max-w-37.5">
+                      {row[h]}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Confirm */}
+        <button
+          disabled={loading}
+          onClick={parseCSV}
+          className="w-full bg-gray-400 hover:bg-gray-600 text-white py-2 rounded transition cursor-pointer"
+        >
+          {loading ? "Processing…" : "Confirm CSV Mapping"}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 type uploadModalProps = {
   project_id: string | undefined;
   toggleUploadModal: () => void;
@@ -51,6 +246,11 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
   const [_imagePath, setImagePath] = mContext.imagePathState;
   const [_isGeoreferencing, setIsGeoreferencing] = mContext.isGeoreferencingState;
 
+  const [csvPreviewModal, setCSVPreviewModal] = useState<boolean>(false);
+  const [csvData, setCsvData] = useState<CSVPreviewType>();
+
+  const toggleCSVModal = () => setCSVPreviewModal(prev => !prev);
+
   const uploadGeoShp = async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || loading) return;
@@ -59,15 +259,82 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
     setStatusText("Uploading…");
 
     try {
-      await ParseFile({ file, project_id, getFeatureLayers });
-      setStatusText("Upload successful.");
-      toast.success("Data Uploaded Succcessfully!");
+      const form = new FormData;
+      form.append("file", file);
+      form.append("project_id", project_id);
+
+      const res = await fetch("/api/upload/geoshp", {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await res.json();
+
+      if (!data) {
+        setStatusText("Upload Failed.");
+        toast.error("Data Upload Failed.");
+      } else {
+        setStatusText("Upload successful.");
+        toast.success("Data Uploaded Succcessfully!");
+        getFeatureLayers();
+        toggleUploadModal();
+      }
     } catch (err) {
       console.error(err);
       setStatusText(
         `Error: ${err instanceof Error ? err.message : String(err)}`
       );
       toast.error("File Upload Error.");
+    } finally {
+      setLoading(false);
+      e.target.value = "";
+    }
+  };
+
+  const uploadCSV = async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || loading) return;
+
+    setLoading(true);
+    setStatusText("Uploading…");
+
+    try {
+      const form = new FormData();
+      form.append("file", file);
+
+      const res = await fetch("/api/csv/preview", {
+        method: "POST",
+        body: form,
+      });
+
+      const data = await res.json();
+
+      if (!data || !Array.isArray(data.headers) || !Array.isArray(data.previewRows)) {
+        throw new Error("Invalid CSV response from server.");
+      }
+
+      // Make sure previewRows only include keys from headers
+      const cleanedRows = data.previewRows.map((row: Record<string, any>) =>
+        data.headers.reduce((acc: Record<string, string>, h: string) => {
+          acc[h] = row[h]?.toString() ?? "";
+          return acc;
+        }, {})
+      );
+
+      const csvPreview: CSVPreviewType = {
+        file,
+        headers: data.headers,
+        previewRows: cleanedRows,
+      };
+
+      setCsvData(csvPreview);
+      toggleCSVModal();
+      setStatusText("CSV Loaded Successfully!");
+      toast.success("CSV Loaded!");
+    } catch (err: any) {
+      console.error(err);
+      setStatusText(`Error: ${err.message ?? "Unknown error"}`);
+      toast.error("CSV Upload Error.");
     } finally {
       setLoading(false);
       e.target.value = "";
@@ -113,7 +380,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
 
   return (
     <div className="fixed inset-0 bg-black/30 text-black flex justify-center items-center">
-      <div className="w-1/3 h-1/3 bg-white">
+      <div className="w-2/5 bg-white">
         <div className="w-full h-full relative p-4">
       {/* Close button */}
       <button
@@ -128,26 +395,49 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
       <div className="w-full h-full flex flex-col items-center space-y-2">
         <h2 className="text-xl font-bold">Upload Data</h2>
         <p className="text-center text-sm w-sm">
-          Upload a GeoJSON / Shapefile ZIP or a PNG (requires georeferencing) .
+          Upload a GeoJSON / Shapefile ZIP, a CSV, or a PNG (requires georeferencing).
         </p>
         <p className="text-center text-xs text-gray-500">1MB File Size Limit (Will be increased later).</p>
 
-        <div className="w-full mt-4 h-3/5 px-4 grid grid-cols-2 gap-4 text-8xl">
+        <div className="w-full mt-4 h-3/5 px-4 grid grid-cols-3 gap-4 text-8xl">
           {/* GeoJSON / SHP */}
           <label
             className={`relative inline-flex items-center justify-center gap-2
               border rounded-xl px-4 py-2 transition-all duration-200
               ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
+              htmlFor="upload-geo"
           >
             <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
               GeoJSON / Shapefile zip
             </span>
             <i className="fa-solid fa-file" />
             <input
+              id="upload-geo"
               type="file"
               disabled={loading}
               accept=".geojson,application/geo+json,.zip,application/zip"
               onChange={uploadGeoShp}
+              className="hidden"
+            />
+          </label>
+
+          {/* CSV */}
+          <label
+            className={`relative inline-flex items-center justify-center gap-2
+              border rounded-xl px-4 py-2 transition-all duration-200
+              ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
+              htmlFor="upload-csv"
+          >
+            <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
+              CSV
+            </span>
+            <i className="fa-solid fa-file-csv" />
+            <input
+              id="upload-csv"
+              type="file"
+              disabled={loading}
+              accept=".csv"
+              onChange={uploadCSV}
               className="hidden"
             />
           </label>
@@ -157,12 +447,14 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
             className={`relative inline-flex items-center justify-center gap-2
               border rounded-xl px-4 py-2 transition-all duration-200
               ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
+              htmlFor="uploadPNG"
           >
             <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
               PNG Upload
             </span>
             <i className="fa-solid fa-file-image" />
             <input
+              id="uploadPNG"
               type="file"
               disabled={loading}
               accept=".png,.jpg"
@@ -179,6 +471,18 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
       </div>
         </div>
       </div>
+
+      {csvPreviewModal && csvData && (
+        <CSVModal
+          toggleCSVModal={toggleCSVModal}
+          headers={csvData.headers}
+          previewRows={csvData.previewRows}
+          file={csvData.file}
+          setStatus={setStatusText}
+          toggleUploadModal={toggleUploadModal}
+          getFeatureLayers={getFeatureLayers}
+        />
+      )}
     </div>
   );
 };

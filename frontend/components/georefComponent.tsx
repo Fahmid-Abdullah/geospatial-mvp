@@ -1,116 +1,49 @@
 "use client";
 
-import { useContext, useEffect, useRef, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { MapContext } from "@/context/MapContext";
 import { EMPTY_GCPS } from "@/app/dashboard/page";
-import { GCPType } from "@/types/gcpTypes";
 import { toast } from "react-toastify";
+import ImageGCPModal from "./ImageGCPModal";
 
 const GeoRefComponent = () => {
-  const mContext = useContext(MapContext);
-  if (!mContext) return null;
+  const ctx = useContext(MapContext);
+  if (!ctx) return null;
 
-  const [loading, setLoading] = useState<boolean>(false);
-  const [projectId, setProjectId] = mContext.selectedProjectState;
-  const [imageUrl, _setImageUrl] = mContext.imageUrlState;
-  const [imagePath, _setImagePath] = mContext.imagePathState;
-  const [gcps, setGcps] = mContext.gcpPathState;
-  const [selectedGcp, setSelectedGcp] = mContext.selectedGcpPathState;
-  const [_isGeoreferencing, setIsGeoreferencing] = mContext.isGeoreferencingState;
-  const [_rasterUrl, setRasterUrl] = mContext.rasterUrlState;
-  const [showImgModal, setShowImgModal] = useState(false);
-  const [activeIndex, setActiveIndex] = useState(0);
-  const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [projectId] = ctx.selectedProjectState;
+  const [imageUrl] = ctx.imageUrlState;
+  const [gcps, setGcps] = ctx.gcpPathState;
+  const [selectedGcp, setSelectedGcp] = ctx.selectedGcpPathState;
+  const [, setIsGeoreferencing] = ctx.isGeoreferencingState;
+  const [, setRasterUrl] = ctx.rasterUrlState;
 
-  const mainImgRef = useRef<HTMLImageElement | null>(null);
-  const modalImgRef = useRef<HTMLImageElement | null>(null);
+  const [activeImageGcp, setActiveImageGcp] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    if (imageUrl) {
-      setShowImgModal(true);
-      setGcps(EMPTY_GCPS);
-      setActiveIndex(0);
-    }
+    if (imageUrl) setGcps(EMPTY_GCPS);
   }, [imageUrl]);
 
+  const canGeoreference = gcps.every(
+    (g) =>
+      g.px !== null &&
+      g.py !== null &&
+      g.lon !== null &&
+      g.lat !== null
+  );
 
-  const handleImageClick = (e: React.MouseEvent) => {
-    if (activeIndex >= 4 || !modalImgRef.current) return;
-
-    const rect = modalImgRef.current.getBoundingClientRect();
-    const px = Math.round(((e.clientX - rect.left) / rect.width) * modalImgRef.current.naturalWidth);
-    const py = Math.round(((e.clientY - rect.top) / rect.height) * modalImgRef.current.naturalHeight);
-
-    setGcps(prev => {
+  const setImagePoint = (index: number, px: number, py: number) => {
+    setGcps((prev) => {
       const next = [...prev];
-      next[activeIndex] = { ...next[activeIndex], px, py };
+      next[index] = { ...next[index], px, py };
       return next;
     });
-
-    setActiveIndex(i => Math.min(i + 1, 4));
-    if (activeIndex + 1 >= 4) setShowImgModal(false);
   };
-
-  const handleMouseMove = (e: React.MouseEvent) => {
-    if (!modalImgRef.current) return;
-
-    const rect = modalImgRef.current.getBoundingClientRect();
-    const x = Math.round(((e.clientX - rect.left) / rect.width) * modalImgRef.current.naturalWidth);
-    const y = Math.round(((e.clientY - rect.top) / rect.height) * modalImgRef.current.naturalHeight);
-    setMousePos({ x, y });
-  };
-
-  const remaining = 4 - gcps.filter(g => g.px !== null && g.py !== null).length;
-  const canGeoreference = gcps.every(g => g.px !== null && g.py !== null && g.lon !== null && g.lat !== null);
-
-  const resetImageGcps = () => {
-    setGcps(EMPTY_GCPS);
-    setActiveIndex(0);
-    setShowImgModal(true);
-    setSelectedGcp(null);
-  };
-
-  const renderDots = (imgRef: React.RefObject<HTMLImageElement | null>) => {
-    if (!imgRef.current) return null;
-    const wScale = imgRef.current.clientWidth / imgRef.current.naturalWidth;
-    const hScale = imgRef.current.clientHeight / imgRef.current.naturalHeight;
-
-    return gcps.map(
-      g =>
-        g.px !== null &&
-        g.py !== null && (
-          <div
-            key={g.id}
-            className="absolute w-3 h-3 bg-red-600 rounded-full text-[10px] text-white flex items-center justify-center pointer-events-none"
-            style={{
-              left: g.px * wScale - 6,
-              top: g.py * hScale - 6,
-            }}
-          >
-            {g.id}
-          </div>
-        )
-    );
-  };
-
-  const setSelected = (gcp: GCPType) => {
-    if (gcp.px === null) {
-      toast.error("Please set Image GCPs first.");
-      return;
-    }
-
-    if (gcp === selectedGcp) {
-      setSelectedGcp(null);
-    } else {
-      setSelectedGcp(gcp);
-    }
-  }
 
   const handleGeoreference = async () => {
     if (!canGeoreference || !imageUrl || !projectId) return;
 
     setLoading(true);
-
     try {
       const res = await fetch("http://localhost:5000/georef", {
         method: "POST",
@@ -123,112 +56,78 @@ const GeoRefComponent = () => {
       });
 
       const data = await res.json();
+      if (!res.ok || !data.signedUrl) throw new Error();
 
-      if (!res.ok || !data.signedUrl) {
-        toast.error("Failed to georeference image");
-        return;
-      }
-
-      // Flask already uploaded + signed it
       setRasterUrl(data.signedUrl);
-      toast.success("Image georeferenced successfully!");
+      toast.success("Image georeferenced!");
       setIsGeoreferencing(false);
-    } catch (err) {
-      console.error(err);
-      toast.error("Error during georeferencing");
+    } catch {
+      toast.error("Georeferencing failed");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="h-full px-4 py-8">
-      <h2 className="text-lg font-semibold mb-4">Georeference Image</h2>
+    <div className="p-6 space-y-6">
+      <h2 className="text-lg font-semibold">Georeference Image</h2>
 
-      {imageUrl && (
-        <div className="relative w-fit mb-4">
-          <img ref={mainImgRef} src={imageUrl} className="max-w-full rounded border select-none" />
-          {renderDots(mainImgRef)}
-          <button
-            onClick={resetImageGcps}
-            className="absolute bottom-2 right-2 bg-black/70 text-white px-3 py-1 rounded text-sm cursor-pointer"
+      {/* -------- GCP LIST -------- */}
+      <div className="space-y-3">
+        {gcps.map((gcp, i) => (
+          <div
+            key={gcp.id}
+            className="border rounded-lg p-4 flex justify-between items-center"
           >
-            Reset / Place Image GCPs
-          </button>
-        </div>
-      )}
-
-      {/* -------- GCP List -------- */}
-      <div className="mt-6 space-y-2">
-        {gcps.map((gcp) => (
-          <div key={gcp.id} className="flex items-center justify-between border rounded px-3 py-2">
-            <div className="text-sm">
-              <strong>Point {gcp.id}:</strong>
-              <div>
-                {gcp.px !== null && gcp.py !== null
-                  ? `px ${gcp.px}, py ${gcp.py}`
-                  : "px/py not set"}
-              </div>
-              <div>
-                {gcp.lon !== null && gcp.lat !== null
-                  ? `lon ${gcp.lon.toFixed(2)}, lat ${gcp.lat.toFixed(2)}`
-                  : "lon/lat not set"}
+            <div>
+              <h4 className="font-medium">Point {i + 1}</h4>
+              <div className="text-sm text-gray-600">
+                Image: {gcp.px !== null ? "✓" : "—"} | Map:{" "}
+                {gcp.lon !== null ? "✓" : "—"}
               </div>
             </div>
-            <button
-              className="text-xs px-2 py-1 rounded text-white bg-gray-400 hover:bg-gray-600 transition-transform duration-200 ease-in-out cursor-pointer"
-              onClick={() => setSelected(gcp)}
-            >
-              {selectedGcp?.id === gcp.id ? "Setting..." : "Set Map Point"}
-            </button>
+
+            <div className="flex gap-2">
+              <button
+                onClick={() => setActiveImageGcp(i)}
+                className="px-3 py-1 rounded bg-blue-500 text-white hover:bg-blue-600"
+              >
+                Set Image GCP
+              </button>
+
+              <button
+                onClick={() => setSelectedGcp(gcp)}
+                className="px-3 py-1 rounded bg-gray-500 text-white hover:bg-gray-700"
+              >
+                Set Map Point
+              </button>
+            </div>
           </div>
         ))}
       </div>
 
-      {/* -------- Georeference -------- */}
+      {/* -------- FINAL ACTION -------- */}
       <button
         disabled={!canGeoreference}
         onClick={handleGeoreference}
-        className={`mt-6 w-full py-2 rounded text-white ${
+        className={`w-full py-2 rounded text-white ${
           canGeoreference
-            ? "bg-gray-400 hover:bg-gray-600 transition-transform duration-200 ease-in-out cursor-pointer"
-            : "bg-gray-200 cursor-not-allowed"
-        }
-          ${loading && "disabled"}`}
+            ? "bg-green-600 hover:bg-green-700"
+            : "bg-gray-300 cursor-not-allowed"
+        }`}
       >
-        {loading ? "Georeferencing..." : "Georeference"}
+        {loading ? "Processing…" : "Georeference"}
       </button>
-      {!canGeoreference && <p className="text-red-500 text-xs text-center mt-1">Please set Image & Map GCP Points to Georeference</p>}
 
-      {/* ================= IMAGE MODAL ================= */}
-      {showImgModal && imageUrl && (
-        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
-          <div className="bg-white rounded shadow-lg p-4 relative max-w-3xl w-full">
-            <button onClick={() => setShowImgModal(false)} className="absolute top-3 right-3 text-gray-600 cursor-pointer">
-              <i className="fa-solid fa-xmark" />
-            </button>
-
-            <h3 className="text-lg font-semibold mb-2">Place 4 markers</h3>
-            <p className="text-sm text-gray-600 mb-2">{remaining > 0 ? `${remaining} points remaining` : "All image points placed"}</p>
-
-            <div className="relative">
-              <img
-                ref={modalImgRef}
-                src={imageUrl}
-                onClick={handleImageClick}
-                onMouseMove={handleMouseMove}
-                className="max-w-full cursor-crosshair select-none"
-              />
-              {renderDots(modalImgRef)}
-            </div>
-
-            {mousePos && (
-              <div className="mt-2 text-xs text-gray-700">
-                px: {mousePos.x}, py: {mousePos.y}
-              </div>
-            )}
-          </div>
-        </div>
+      {/* -------- IMAGE MODAL -------- */}
+      {activeImageGcp !== null && imageUrl && (
+        <ImageGCPModal
+          imageUrl={imageUrl}
+          gcpIndex={activeImageGcp}
+          gcps={gcps}
+          onSetPoint={(px: number, py: number) => setImagePoint(activeImageGcp, px, py)}
+          onClose={() => setActiveImageGcp(null)}
+        />
       )}
     </div>
   );

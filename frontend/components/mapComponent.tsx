@@ -186,10 +186,6 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     }
   };
 
-  useEffect(() => {
-    fitBoundsRef.current();
-  }, [selectedLayer]);
-
   // --- Render & Update Feature Layers ---
   useEffect(() => {
     const map = mapContext.mapRef.current;

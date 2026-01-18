@@ -35,7 +35,6 @@ export async function CreateFeature({ layer_id, feature_properties, feature_geom
       throw error;
     }
 
-
     return data ?? null
 }
 

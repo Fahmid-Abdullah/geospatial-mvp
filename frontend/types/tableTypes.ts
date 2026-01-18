@@ -33,3 +33,29 @@ export type FeatureLayerType = {
     features: FeatureType[];
     is_expanded?: boolean;
 }
+
+export type DatasetStatus = 
+  | 'created'
+  | 'csv_uploaded'
+  | 'image_aligned'
+  | 'placing_points'
+  | 'points_ready'
+
+export type Dataset = {
+    id: string;
+    name: string;
+    status: DatasetStatus;
+}
+
+export type DatasetImage = {
+    geotiff_path: string;
+    crs: string;
+    transform: any;
+    bounds: any;
+}
+
+export type DatasetPoint = {
+    lon: number;
+    lat: number;
+    data: Record<string, any>;
+}

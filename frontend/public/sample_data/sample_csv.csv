@@ -1,0 +1,7 @@
+LocationName,Latitude,Longitude,Population,Category,Notes
+Downtown Core,43.6532,-79.3832,120000,Urban,High density area
+Waterfront,43.6404,-79.3767,45000,Urban,Near lake
+North Campus,43.0096,-81.2737,18000,Education,University district
+Industrial Park,43.6950,-79.7422,23000,Industrial,Warehouses and factories
+Suburban East,43.7150,-79.2815,52000,Residential,Mostly detached homes
+Suburban West,43.6510,-79.9510,48000,Residential,Car dependent area
