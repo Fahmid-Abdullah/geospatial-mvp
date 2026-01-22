@@ -1,57 +1,15 @@
 "use client";
 
-import { useContext, useEffect, useMemo, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
-import { MapContext } from "@/context/MapContext";
+import { useContext, useEffect, useMemo, useRef, useState, useCallback } from "react";
+import maplibregl, { LngLatBounds } from "maplibre-gl";
 import MapboxDraw from "maplibre-gl-draw";
+
+import { MapContext } from "@/context/MapContext";
 import { FeatureLayerType, FeatureType } from "@/types/tableTypes";
-
-import { CreateFeature } from "@/actions/featureActions";
+import { CreateFeature, DeleteFeature } from "@/actions/featureActions";
 import { CreateLayer, GetProjectLayerFeatures } from "@/actions/layerActions";
-import { DeleteFeature } from "@/actions/featureActions";
 
-import type {
-  FeatureCollection,
-  Geometry,
-  GeoJsonProperties,
-  Feature,
-} from "geojson";
-
-// Convert FeatureLayerType to GeoJSON FeatureCollection
-const toFeatureCollection = (
-  fl: FeatureLayerType
-): FeatureCollection<Geometry, GeoJsonProperties> => ({
-  type: "FeatureCollection",
-  features: fl.features
-    .filter((f) => f.is_visible)
-    .map(
-      (f): Feature<Geometry, GeoJsonProperties> => ({
-        type: "Feature",
-        id: f.id,
-        geometry: f.geom,
-        properties: {
-          ...(f.properties ?? {}),
-          __feature_id: f.id,
-          __layer_id: fl.layer.id,
-        },
-      })
-    ),
-});
-
-// Determine render type
-const getRenderType = (
-  fc: FeatureCollection
-): "point" | "line" | "polygon" | null => {
-  for (const f of fc.features) {
-    const t = f.geometry?.type;
-    if (!t) continue;
-
-    if (t === "Point" || t === "MultiPoint") return "point";
-    if (t === "LineString" || t === "MultiLineString") return "line";
-    if (t === "Polygon" || t === "MultiPolygon") return "polygon";
-  }
-  return null;
-};
+import type { FeatureCollection, Geometry, GeoJsonProperties, Feature } from "geojson";
 
 interface MapComponentProps {
   drawMode: boolean;
@@ -62,83 +20,83 @@ type PendingDraw = {
   feature: Feature<Geometry, GeoJsonProperties>;
 };
 
-const MapComponent = ({ drawMode }: MapComponentProps) => {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const fitBoundsRef = useRef<() => void>(() => {});
-  const mapContext = useContext(MapContext);
+// Helper Functions
+const toFeatureCollection = (fl: FeatureLayerType): FeatureCollection<Geometry, GeoJsonProperties> => ({
+  type: "FeatureCollection",
+  features: fl.features
+    .filter(f => f.is_visible)
+    .map(f => ({
+      type: "Feature",
+      id: f.id,
+      geometry: f.geom,
+      properties: {
+        ...(f.properties ?? {}),
+        __feature_id: f.id,
+        __layer_id: fl.layer.id,
+      },
+    })),
+});
 
+const getRenderType = (fc: FeatureCollection): "point" | "line" | "polygon" | null => {
+  for (const f of fc.features) {
+    if (!f.geometry?.type) continue;
+    const t = f.geometry.type;
+    if (t === "Point" || t === "MultiPoint") return "point";
+    if (t === "LineString" || t === "MultiLineString") return "line";
+    if (t === "Polygon" || t === "MultiPolygon") return "polygon";
+  }
+  return null;
+};
+
+const MapComponent = ({ drawMode }: MapComponentProps) => {
+  const mapContext = useContext(MapContext);
   if (!mapContext) return null;
+
+  // States
+  const [activeMode, setActiveMode] = useState<string | null>(null);
+  const [pendingDraw, setPendingDraw] = useState<PendingDraw | null>(null);
+  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
+  const [assignMode, setAssignMode] = useState<"existing" | "new">("existing");
+  const [existingLayerId, setExistingLayerId] = useState("");
+  const [newLayerName, setNewLayerName] = useState("");
+  const [existingPropsDraft, setExistingPropsDraft] = useState<Record<string, string>>({});
+  const [newPropsRows, setNewPropsRows] = useState([{ key: "", value: "" }]);
+
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const fitBoundsRef = useRef<(layerId?: string) => void>(() => {});
 
   const [zoom, setZoom] = mapContext.zoomState;
   const [coords, setCoords] = mapContext.coordsState;
-  const [activeMode, setActiveMode] = useState<string | null>(null);
-
   const [featureLayers, setFeatureLayers] = mapContext.featurelayerState;
-
   const [selectedProject] = mapContext.selectedProjectState;
-
   const [selectedFeature, setSelectedFeature] = mapContext.selectedFeatureState;
   const [selectedLayer, setSelectedLayer] = mapContext.selectedLayerState;
-
   const [selectedGcp, setSelectedGcp] = mapContext.selectedGcpPathState;
   const [gcps, setGcps] = mapContext.gcpPathState;
-  const [rasterUrl, _setRasterUrl] = mapContext.rasterUrlState;
-  const [isGeoreferencing, _setIsGeoreferencing] =
-    mapContext.isGeoreferencingState;
+  const [rasterUrl] = mapContext.rasterUrlState;
+  const [rasterBounds] = mapContext.rasterBounds;
+  const [rasterVisiblity] = mapContext.rasterVisibility;
+  const [rasterOpacity] = mapContext.rasterOpacity;
+  const [csvRows, setCsvRows] = mapContext.csvRows;
+  const [isGeoreferencing] = mapContext.isGeoreferencingState;
 
-  // -----------------------------
-  // Modal + pending draw state
-  // -----------------------------
-  const [pendingDraw, setPendingDraw] = useState<PendingDraw | null>(null);
-  const [isAssignModalOpen, setIsAssignModalOpen] = useState(false);
-
-  const [assignMode, setAssignMode] = useState<"existing" | "new">("existing");
-  const [existingLayerId, setExistingLayerId] = useState<string>("");
-  const [newLayerName, setNewLayerName] = useState<string>("");
-
-  // Existing layer props: only shared keys
-  const [existingPropsDraft, setExistingPropsDraft] = useState<
-    Record<string, string>
-  >({});
-
-  // New layer props: arbitrary rows
-  const [newPropsRows, setNewPropsRows] = useState<
-    Array<{ key: string; value: string }>
-  >([{ key: "", value: "" }]);
-
-  // shared keys helper
-  const getSharedPropertyKeysForLayer = (layerId: string): string[] => {
-    const fl = featureLayers.find((x) => x.layer.id === layerId);
-    if (!fl) return [];
-
-    const feats = fl.features;
-    if (!feats.length) return [];
-
-    const keysOf = (p: any) =>
-      p && typeof p === "object" ? Object.keys(p) : [];
-
-    let shared = new Set<string>(keysOf(feats[0].properties));
-
-    for (let i = 1; i < feats.length; i++) {
-      const kset = new Set<string>(keysOf(feats[i].properties));
-      shared = new Set([...shared].filter((k) => kset.has(k)));
-    }
-
-    const cleaned = [...shared].filter((k) => !k.startsWith("__"));
-    cleaned.sort((a, b) => a.localeCompare(b));
-    return cleaned;
-  };
-
+  // Derived
   const sharedKeys = useMemo(() => {
     if (!existingLayerId) return [];
-    return getSharedPropertyKeysForLayer(existingLayerId);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const fl = featureLayers.find(f => f.layer.id === existingLayerId);
+    if (!fl || !fl.features.length) return [];
+    let shared = new Set(Object.keys(fl.features[0].properties ?? {}));
+    fl.features.slice(1).forEach(f => {
+      shared = new Set([...shared].filter(k => Object.keys(f.properties ?? {}).includes(k)));
+    });
+    return [...shared].filter(k => !k.startsWith("__")).sort();
   }, [existingLayerId, featureLayers]);
 
+  // Modal Helpers
   const resetAssignModalState = () => {
-    const first = featureLayers[0]?.layer.id ?? "";
-    setAssignMode(first ? "existing" : "new");
-    setExistingLayerId(first);
+    const firstLayer = featureLayers[0]?.layer.id ?? "";
+    setAssignMode(firstLayer ? "existing" : "new");
+    setExistingLayerId(firstLayer);
     setNewLayerName("");
     setExistingPropsDraft({});
     setNewPropsRows([{ key: "", value: "" }]);
@@ -149,6 +107,64 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     setPendingDraw(null);
     resetAssignModalState();
   };
+
+  const deletePendingDraw = () => {
+    const draw = mapContext.drawRef.current;
+    if (!draw || !pendingDraw) return;
+    try {
+      draw.delete(pendingDraw.drawId);
+    } catch {}
+  };
+
+  const handleSaveFeature = useCallback(async () => {
+    if (!pendingDraw || !pendingDraw.feature.geometry || !selectedProject?.id) return;
+
+    try {
+      if (assignMode === "existing") {
+        if (!existingLayerId) return;
+        await CreateFeature({
+          layer_id: existingLayerId,
+          feature_properties: cleanProps(existingPropsDraft),
+          feature_geom: pendingDraw.feature.geometry,
+        });
+      } else {
+        if (!newLayerName.trim()) return;
+        const layer = await CreateLayer({ project_id: selectedProject.id, layer_name: newLayerName.trim() });
+        if (!layer?.id) return;
+        await CreateFeature({
+          layer_id: layer.id,
+          feature_properties: cleanProps(cleanRowsToProps(newPropsRows)),
+          feature_geom: pendingDraw.feature.geometry,
+        });
+      }
+      const updated = await GetProjectLayerFeatures({ project_id: selectedProject.id });
+      setFeatureLayers(updated);
+      deletePendingDraw();
+      closeAssignModal();
+    } catch (err) {
+      console.error("Failed saving feature:", err);
+    }
+  }, [assignMode, existingLayerId, existingPropsDraft, newLayerName, newPropsRows, pendingDraw, selectedProject, setFeatureLayers]);
+
+  const handleTrash = useCallback(async () => {
+    const draw = mapContext.drawRef.current;
+    const selectedIds = draw?.getSelectedIds?.() ?? [];
+    if (selectedIds.length > 0) {
+      selectedIds.forEach(id => draw?.delete(id));
+      return;
+    }
+
+    if (!selectedFeature || !selectedProject?.id) return;
+
+    try {
+      await DeleteFeature({ feature_id: String(selectedFeature.id) });
+      setSelectedFeature(null);
+      const updated = await GetProjectLayerFeatures({ project_id: selectedProject.id });
+      setFeatureLayers(updated);
+    } catch (err) {
+      console.error("Failed to delete feature:", err);
+    }
+  }, [selectedFeature, selectedProject, setFeatureLayers, setSelectedFeature, mapContext.drawRef]);
 
   const deletePendingDrawFromDrawControl = () => {
     const draw = mapContext.drawRef.current;
@@ -180,76 +196,52 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     return out;
   };
 
-  const handleSaveFeature = async () => {
-    if (!pendingDraw) return;
-
-    const geom = pendingDraw.feature.geometry;
-    if (!geom) return;
-
-    const projectId = selectedProject?.id;
-    if (!projectId) {
-      console.error("No selected project id available.");
-      return;
-    }
-
-    try {
-      if (assignMode === "existing") {
-        if (!existingLayerId) return;
-
-        const props = cleanProps(existingPropsDraft);
-
-        await CreateFeature({
-          layer_id: existingLayerId,
-          feature_properties: props,
-          feature_geom: geom,
-        });
-
-        const updated = await GetProjectLayerFeatures({ project_id: projectId });
-        setFeatureLayers(updated);
-
-        deletePendingDrawFromDrawControl();
-        closeAssignModal();
-        return;
-      }
-
-      // new layer
-      const name = newLayerName.trim();
-      if (!name) return;
-
-      const props = cleanProps(cleanRowsToProps(newPropsRows));
-
-      const createdLayer = await CreateLayer({
-        project_id: projectId,
-        layer_name: name,
-      });
-
-      const newLayerId = createdLayer?.id;
-      if (!newLayerId) {
-        console.error("CreateLayer returned no id");
-        return;
-      }
-
-      await CreateFeature({
-        layer_id: newLayerId,
-        feature_properties: props,
-        feature_geom: geom,
-      });
-
-      const updated = await GetProjectLayerFeatures({ project_id: projectId });
-      setFeatureLayers(updated);
-
-      deletePendingDrawFromDrawControl();
-      closeAssignModal();
-    } catch (err) {
-      console.error("Failed saving feature:", err);
-      // keep modal open so user can retry
-    }
-  };
-
   const onCancelAssign = () => {
     deletePendingDrawFromDrawControl();
     closeAssignModal();
   };
+
+  // --- Memoize GeoJSON and layer bounds ---
+  const geojsonByLayer = useMemo(() => {
+    const map = new Map<string, FeatureCollection<Geometry, GeoJsonProperties>>();
+    const boundsByLayer = new Map<string, maplibregl.LngLatBounds>();
+    
+    featureLayers.forEach((fl) => {
+      const geojson = toFeatureCollection(fl);
+      map.set(fl.layer.id, geojson);
+
+      // Precompute bounds for the layer
+      const bounds = new maplibregl.LngLatBounds();
+      geojson.features.forEach((f) => {
+        if (!f.geometry) return;
+        const extendCoords = (geom: Geometry) => {
+          switch (geom.type) {
+            case "Point":
+            case "MultiPoint":
+            case "LineString":
+            case "MultiLineString":
+            case "Polygon":
+            case "MultiPolygon": {
+              const coords = geom.coordinates as any;
+              const addCoords = (c: any) =>
+                Array.isArray(c[0])
+                  ? c.forEach(addCoords)
+                  : bounds.extend(c as [number, number]);
+              addCoords(coords);
+              break;
+            }
+            case "GeometryCollection":
+              geom.geometries.forEach(extendCoords);
+              break;
+          }
+        };
+        extendCoords(f.geometry);
+      });
+      boundsByLayer.set(fl.layer.id, bounds);
+    });
+
+    return { geojsonByLayer: map, boundsByLayer };
+  }, [featureLayers]);
 
   // If user switches existing layer, re-shape draft to only those keys
   useEffect(() => {
@@ -262,7 +254,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sharedKeys, assignMode, isAssignModalOpen]);
 
-  // --- Initialize Map ---
+  // Initialize Map
   useEffect(() => {
     if (!mapContainerRef.current || mapContext.mapRef.current) return;
 
@@ -306,7 +298,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     };
   }, []);
 
-  // --- Initialize Draw ---
+  // Initialize Draw
   useEffect(() => {
     if (!mapContext || mapContext.drawRef.current) return;
 
@@ -314,7 +306,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     mapContext.drawRef.current = draw;
   }, [mapContext]);
 
-  // --- Attach Draw to Map + handlers ---
+  // Attach Draw to Map + handlers
   useEffect(() => {
     const map = mapContext.mapRef.current;
     const draw = mapContext.drawRef.current;
@@ -355,58 +347,29 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     };
   }, [mapContext, featureLayers]);
 
-  // --- Fit On Bounds ---
-  fitBoundsRef.current = () => {
+  // fitBounds
+  fitBoundsRef.current = (layerId?: string) => {
     const map = mapContext.mapRef.current;
     if (!map) return;
 
-    const selectedFl = selectedLayer
-      ? featureLayers.find((fl) => fl.layer.id === selectedLayer.id)
-      : null;
+    let bounds: maplibregl.LngLatBounds | null = null;
 
-    const featuresToFit = selectedFl
-      ? selectedFl.features.filter((f) => f.is_visible)
-      : featureLayers.flatMap((fl) => fl.features.filter((f) => f.is_visible));
-
-    if (featuresToFit.length === 0) return;
-
-    const bounds = new maplibregl.LngLatBounds();
-
-    const extendCoords = (geom: Geometry) => {
-      if (!geom) return;
-      switch (geom.type) {
-        case "Point":
-        case "MultiPoint":
-        case "LineString":
-        case "MultiLineString":
-        case "Polygon":
-        case "MultiPolygon": {
-          const coords = geom.coordinates as any;
-          const addCoords = (c: any) =>
-            Array.isArray(c[0])
-              ? c.forEach(addCoords)
-              : bounds.extend(c as [number, number]);
-          addCoords(coords);
-          break;
-        }
-        case "GeometryCollection":
-          geom.geometries.forEach((g) => extendCoords(g));
-          break;
-      }
-    };
-
-    featuresToFit.forEach((f) => extendCoords(f.geom));
-
-    if (!bounds.isEmpty()) {
-      map.fitBounds(bounds, {
-        padding: { top: 50, bottom: 50, left: 600, right: 500 },
-        maxZoom: 10,
-        duration: 800,
-      });
+    if (layerId) {
+      bounds = geojsonByLayer.boundsByLayer.get(layerId) || null;
+    } else {
+      bounds = new maplibregl.LngLatBounds();
+      geojsonByLayer.boundsByLayer.forEach((b) => bounds!.extend(b));
+      if (bounds.isEmpty()) return;
     }
+
+    map.fitBounds(bounds as LngLatBounds, {
+      padding: { top: 50, bottom: 50, left: 600, right: 500 },
+      maxZoom: 10,
+      duration: 800,
+    });
   };
 
-  // --- Render & Update Feature Layers ---
+  // Render & Update Feature Layers
   useEffect(() => {
     const map = mapContext.mapRef.current;
     if (!map) return;
@@ -421,12 +384,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     };
 
     const updateLayers = () => {
-      const currentLayerIds = new Set(
-        featureLayers.flatMap((fl) => [
-          `layer-${fl.layer.id}`,
-          `layer-${fl.layer.id}-outline`,
-        ])
-      );
+      const currentLayerIds = new Set(featureLayers.flatMap(fl => [`layer-${fl.layer.id}`, `layer-${fl.layer.id}-outline`]));
 
       // Remove obsolete layers and sources
       map.getStyle().layers?.forEach((l) => {
@@ -437,15 +395,15 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
         }
       });
 
-      // Add or update layers
+      // Add/update layers
       featureLayers.forEach((fl) => {
-        const sourceId = `source-${fl.layer.id}`;
         const layerId = `layer-${fl.layer.id}`;
-        const geojson = toFeatureCollection(fl);
+        const sourceId = `source-${fl.layer.id}`;
+        const geojson = geojsonByLayer.geojsonByLayer.get(fl.layer.id);
+        if (!geojson) return;
         const renderType = getRenderType(geojson);
         if (!renderType) return;
 
-        // Update or add source
         if (map.getSource(sourceId)) {
           (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData(geojson);
         } else {
@@ -453,274 +411,248 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
         }
 
         if (!map.getLayer(layerId)) {
+          // Add new layer
           if (renderType === "point") {
-            map.addLayer({
-              id: layerId,
-              type: "circle",
-              source: sourceId,
-              paint: {
-                "circle-radius": fl.layer.style_size ?? 5,
-                "circle-color": fl.layer.style_color ?? "#3b82f6",
-                "circle-opacity": fl.layer.style_opacity ?? 1,
-              },
-            });
+            map.addLayer({ id: layerId, type: "circle", source: sourceId, paint: { "circle-radius": fl.layer.style_size ?? 5, "circle-color": fl.layer.style_color ?? "#3b82f6", "circle-opacity": fl.layer.style_opacity ?? 1 } });
           } else if (renderType === "line") {
-            map.addLayer({
-              id: layerId,
-              type: "line",
-              source: sourceId,
-              paint: {
-                "line-width": fl.layer.style_size ?? 3,
-                "line-color": fl.layer.style_color ?? "#3b82f6",
-                "line-opacity": fl.layer.style_opacity ?? 1,
-              },
-            });
+            map.addLayer({ id: layerId, type: "line", source: sourceId, paint: { "line-width": fl.layer.style_size ?? 3, "line-color": fl.layer.style_color ?? "#3b82f6", "line-opacity": fl.layer.style_opacity ?? 1 } });
           } else if (renderType === "polygon") {
             const fillColor = fl.layer.style_color ?? "#22c55e";
-
-            map.addLayer({
-              id: layerId,
-              type: "fill",
-              source: sourceId,
-              paint: {
-                "fill-color": fillColor,
-                "fill-opacity": fl.layer.style_opacity ?? 0.4,
-              },
-            });
-
-            const outlineId = `${layerId}-outline`;
-            map.addLayer(
-              {
-                id: outlineId,
-                type: "line",
-                source: sourceId,
-                paint: {
-                  "line-color": darkenColor(fillColor, 0.3),
-                  "line-width": 2,
-                },
-              },
-              layerId
-            );
+            map.addLayer({ id: layerId, type: "fill", source: sourceId, paint: { "fill-color": fillColor, "fill-opacity": fl.layer.style_opacity ?? 0.4 } });
+            map.addLayer({ id: `${layerId}-outline`, type: "line", source: sourceId, paint: { "line-color": darkenColor(fillColor, 0.3), "line-width": 2 } }, layerId);
           }
         } else {
-          // Update paint properties
+          // Update paint properties only
           if (renderType === "point") {
             map.setPaintProperty(layerId, "circle-radius", fl.layer.style_size);
             map.setPaintProperty(layerId, "circle-color", fl.layer.style_color);
-            map.setPaintProperty(
-              layerId,
-              "circle-opacity",
-              fl.layer.style_opacity
-            );
+            map.setPaintProperty(layerId, "circle-opacity", fl.layer.style_opacity);
           } else if (renderType === "line") {
             map.setPaintProperty(layerId, "line-width", fl.layer.style_size);
             map.setPaintProperty(layerId, "line-color", fl.layer.style_color);
-            map.setPaintProperty(
-              layerId,
-              "line-opacity",
-              fl.layer.style_opacity
-            );
+            map.setPaintProperty(layerId, "line-opacity", fl.layer.style_opacity);
           } else if (renderType === "polygon") {
             map.setPaintProperty(layerId, "fill-color", fl.layer.style_color);
-            map.setPaintProperty(
-              layerId,
-              "fill-opacity",
-              fl.layer.style_opacity
-            );
-
+            map.setPaintProperty(layerId, "fill-opacity", fl.layer.style_opacity);
             const outlineId = `${layerId}-outline`;
-            if (map.getLayer(outlineId)) {
-              map.setPaintProperty(outlineId, "line-color", fl.layer.style_color);
-            }
+            if (map.getLayer(outlineId)) map.setPaintProperty(outlineId, "line-color", fl.layer.style_color);
           }
         }
-      });
-
-      // Keep order stable + outlines above fills
-      featureLayers.forEach((fl) => {
-        const layerId = `layer-${fl.layer.id}`;
-        const outlineId = `${layerId}-outline`;
-        if (map.getLayer(layerId)) map.moveLayer(layerId);
-        if (map.getLayer(outlineId)) map.moveLayer(outlineId, layerId);
-      });
-
-      // Move highlight layers to the top
-      [
-        "highlight-layer",
-        "highlight-layer-outline",
-        "highlight-layer-point",
-        "highlight-layer-line",
-      ].forEach((id) => {
-        if (map.getLayer(id)) map.moveLayer(id);
       });
     };
 
     if (!map.isStyleLoaded()) {
       map.once("load", () => {
         updateLayers();
-        fitBoundsRef.current();
+        enforceLayerOrder();
+        fitBoundsRef.current(selectedLayer?.id);
       });
     } else {
       updateLayers();
-      fitBoundsRef.current();
+      enforceLayerOrder();
+      fitBoundsRef.current(selectedLayer?.id);
     }
-  }, [featureLayers]);
+  }, [featureLayers, geojsonByLayer]);
 
-  // --- Feature Click ---
+  // After updating/adding all layers:
+  const enforceLayerOrder = () => {
+    const map = mapContext.mapRef.current;
+    if (!map) return;
+
+    // Raster on bottom (under all features)
+    const rasterLayerId = "georef-image-layer";
+    if (map.getLayer(rasterLayerId)) {
+      const firstFeatureLayerId = featureLayers[0] ? `layer-${featureLayers[0].layer.id}` : undefined;
+      if (firstFeatureLayerId) {
+        map.moveLayer(rasterLayerId, firstFeatureLayerId);
+      }
+    }
+
+    // Feature layers in order of featureLayers array
+    featureLayers.forEach((fl, idx) => {
+      const layerId = `layer-${fl.layer.id}`;
+      const outlineId = `${layerId}-outline`;
+      const nextLayerId = featureLayers[idx + 1] ? `layer-${featureLayers[idx + 1].layer.id}` : undefined;
+
+      if (map.getLayer(layerId)) {
+        if (nextLayerId) map.moveLayer(layerId, nextLayerId);
+      }
+      if (map.getLayer(outlineId)) {
+        if (nextLayerId) map.moveLayer(outlineId, nextLayerId);
+      }
+    });
+
+    // Highlight on top
+    ["highlight-layer", "highlight-layer-outline", "highlight-layer-point", "highlight-layer-line"].forEach((id) => {
+      if (map.getLayer(id)) map.moveLayer(id);
+    });
+
+    // Temporary layers (CSV, GCP) above everything else
+    ["temp-csv-layer", "temp-gcp-layer"].forEach((id) => {
+      if (map.getLayer(id)) map.moveLayer(id);
+    });
+  };
+
+  // Feature Click
   useEffect(() => {
     const map = mapContext.mapRef.current;
     if (!map) return;
 
-    const handleMapClick = (e: maplibregl.MapMouseEvent) => {
-      const features = map.queryRenderedFeatures(e.point, {
-        layers: featureLayers.map((fl) => `layer-${fl.layer.id}`),
-      });
-
-      if (features.length) {
-        const topFeature = features[0];
-        const featureId = topFeature.properties?.__feature_id;
-        const layerId = topFeature.properties?.__layer_id;
-        const clickedLayer = featureLayers.find((fl) => fl.layer.id === layerId);
-
-        if (clickedLayer) {
-          setSelectedLayer(clickedLayer.layer);
-
-          const clickedFeature = clickedLayer.features.find(
-            (f) => f.id === featureId
-          );
-          if (clickedFeature) setSelectedFeature(clickedFeature);
+    // TS now knows map is definitely Map, not null
+    const handleClick = (e: maplibregl.MapMouseEvent) => {
+      if (isGeoreferencing && selectedGcp) {
+        // GCP click logic
+        const gcpIndex = gcps.findIndex((g) => g.id === selectedGcp.id);
+        if (gcpIndex !== -1) {
+          const gcp = gcps[gcpIndex];
+          const newGcps = [...gcps];
+          newGcps[gcpIndex] = { ...gcp, lon: e.lngLat.lng, lat: e.lngLat.lat };
+          setGcps(newGcps);
         }
+        return; // stop further processing
+      }
+
+      // Feature selection logic
+      const queryLayers = featureLayers
+        .filter((fl) => fl.features.some((f) => f.is_visible))
+        .map((fl) => `layer-${fl.layer.id}`);
+
+      if (!queryLayers.length) return;
+
+      const features = map.queryRenderedFeatures(e.point, { layers: queryLayers });
+      if (!features.length) return;
+
+      const topFeature = features[0];
+      const featureId = topFeature.properties?.__feature_id;
+      const layerId = topFeature.properties?.__layer_id;
+      const clickedLayer = featureLayers.find((fl) => fl.layer.id === layerId);
+
+      if (!isGeoreferencing && clickedLayer && featureId != null) {
+        setSelectedLayer(clickedLayer.layer); // highlight clicked layer
+        const clickedFeature = clickedLayer.features.find((f) => f.id === featureId);
+        if (clickedFeature) setSelectedFeature(clickedFeature);
       }
     };
 
-    map.on("click", handleMapClick);
+    map.on("click", handleClick);
 
     return () => {
-      map.off("click", handleMapClick);
+      map.off("click", handleClick);
     };
-  }, [featureLayers]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [featureLayers, selectedLayer, isGeoreferencing]);
 
-  // --- Highlight Selected Feature Layer ---
-  useEffect(() => {
-    const map = mapContext.mapRef.current;
-    if (!map) return;
+    // Highlight Selected Feature Layer
+    useEffect(() => {
+      const map = mapContext.mapRef.current;
+      if (!map) return;
 
-    const setupHighlight = () => {
-      const highlightSourceId = "highlight-source";
-      const highlightLayerId = "highlight-layer";
+      const setupHighlight = () => {
+        const highlightSourceId = "highlight-source";
+        const highlightLayerId = "highlight-layer";
 
-      const toGeoJSONFeature = (
-        f: FeatureType
-      ): Feature<Geometry, GeoJsonProperties> => ({
-        type: "Feature",
-        geometry: f.geom,
-        properties: f.properties ?? {},
-        id: f.id,
-      });
-
-      if (!map.getSource(highlightSourceId)) {
-        map.addSource(highlightSourceId, {
-          type: "geojson",
-          data: { type: "FeatureCollection", features: [] },
+        const toGeoJSONFeature = (f: FeatureType): Feature<Geometry, GeoJsonProperties> => ({
+          type: "Feature",
+          geometry: f.geom,
+          properties: f.properties ?? {},
+          id: f.id,
         });
 
-        map.addLayer({
-          id: highlightLayerId,
-          type: "fill",
-          source: highlightSourceId,
-          paint: { "fill-color": "#facc15", "fill-opacity": 0.8 },
-        });
+        // Create source & layers if not exists
+        if (!map.getSource(highlightSourceId)) {
+          map.addSource(highlightSourceId, {
+            type: "geojson",
+            data: { type: "FeatureCollection", features: [] },
+          });
 
-        map.addLayer({
-          id: `${highlightLayerId}-outline`,
-          type: "line",
-          source: highlightSourceId,
-          paint: { "line-color": "#b45309", "line-width": 2 },
-        });
+          // Polygon fill
+          map.addLayer({
+            id: highlightLayerId,
+            type: "fill",
+            source: highlightSourceId,
+            paint: {
+              "fill-color": "#f59e0b", // stronger amber
+              "fill-opacity": 0.9,     // more solid
+            },
+          });
 
-        map.addLayer({
-          id: `${highlightLayerId}-point`,
-          type: "circle",
-          source: highlightSourceId,
-          paint: {
-            "circle-radius": 8,
-            "circle-color": "#facc15",
-            "circle-opacity": 1,
-          },
-        });
+          // Polygon outline
+          map.addLayer({
+            id: `${highlightLayerId}-outline`,
+            type: "line",
+            source: highlightSourceId,
+            paint: {
+              "line-color": "#b45309",
+              "line-width": 3,         // thicker
+            },
+          });
 
-        map.addLayer({
-          id: `${highlightLayerId}-line`,
-          type: "line",
-          source: highlightSourceId,
-          paint: {
-            "line-color": "#facc15",
-            "line-width": 4,
-            "line-opacity": 1,
-          },
-        });
-      }
+          // Point highlight
+          map.addLayer({
+            id: `${highlightLayerId}-point`,
+            type: "circle",
+            source: highlightSourceId,
+            paint: {
+              "circle-radius": 10,
+              "circle-color": "#f59e0b",
+              "circle-stroke-color": "#ffffff",
+              "circle-stroke-width": 2,
+              "circle-opacity": 1,
+            },
+          });
 
-      if (selectedFeature && selectedLayer) {
-        const geoFeature = toGeoJSONFeature(selectedFeature);
-
-        (map.getSource(highlightSourceId) as maplibregl.GeoJSONSource).setData({
-          type: "FeatureCollection",
-          features: [geoFeature],
-        });
-
-        const geomType = selectedFeature.geom?.type;
-
-        map.setLayoutProperty(
-          `${highlightLayerId}-point`,
-          "visibility",
-          geomType?.includes("Point") ? "visible" : "none"
-        );
-        map.setLayoutProperty(
-          `${highlightLayerId}-line`,
-          "visibility",
-          geomType?.includes("LineString") ? "visible" : "none"
-        );
-        map.setLayoutProperty(
-          highlightLayerId,
-          "visibility",
-          geomType?.includes("Polygon") ? "visible" : "none"
-        );
-        map.setLayoutProperty(
-          `${highlightLayerId}-outline`,
-          "visibility",
-          geomType?.includes("Polygon") ? "visible" : "none"
-        );
-
-        if (geomType?.includes("Point")) {
-          map.setPaintProperty(
-            `${highlightLayerId}-point`,
-            "circle-radius",
-            selectedLayer.style_size ?? 8
-          );
-        } else if (geomType?.includes("LineString")) {
-          map.setPaintProperty(
-            `${highlightLayerId}-line`,
-            "line-width",
-            selectedLayer.style_size ?? 4
-          );
+          // Line highlight
+          map.addLayer({
+            id: `${highlightLayerId}-line`,
+            type: "line",
+            source: highlightSourceId,
+            paint: {
+              "line-color": "#f59e0b",
+              "line-width": 5,  // thicker
+              "line-opacity": 1,
+            },
+          });
         }
+
+        // Update highlight based on selected feature
+        if (selectedFeature && selectedLayer) {
+          const geoFeature = toGeoJSONFeature(selectedFeature);
+          (map.getSource(highlightSourceId) as maplibregl.GeoJSONSource).setData({
+            type: "FeatureCollection",
+            features: [geoFeature],
+          });
+
+          const geomType = selectedFeature.geom?.type;
+
+          // Visibility
+          map.setLayoutProperty(`${highlightLayerId}-point`, "visibility", geomType?.includes("Point") ? "visible" : "none");
+          map.setLayoutProperty(`${highlightLayerId}-line`, "visibility", geomType?.includes("LineString") ? "visible" : "none");
+          map.setLayoutProperty(highlightLayerId, "visibility", geomType?.includes("Polygon") ? "visible" : "none");
+          map.setLayoutProperty(`${highlightLayerId}-outline`, "visibility", geomType?.includes("Polygon") ? "visible" : "none");
+
+          // Dynamic sizing
+          if (geomType?.includes("Point")) {
+            map.setPaintProperty(`${highlightLayerId}-point`, "circle-radius", (selectedLayer.style_size ?? 8) + 2);
+          } else if (geomType?.includes("LineString")) {
+            map.setPaintProperty(`${highlightLayerId}-line`, "line-width", (selectedLayer.style_size ?? 4) + 2);
+          }
+        } else {
+          // Hide highlight if nothing selected
+          map.setLayoutProperty(`${highlightLayerId}-point`, "visibility", "none");
+          map.setLayoutProperty(`${highlightLayerId}-line`, "visibility", "none");
+          map.setLayoutProperty(highlightLayerId, "visibility", "none");
+          map.setLayoutProperty(`${highlightLayerId}-outline`, "visibility", "none");
+        }
+      };
+
+      if (!map.isStyleLoaded()) {
+        map.once("load", setupHighlight);
       } else {
-        map.setLayoutProperty(`${highlightLayerId}-point`, "visibility", "none");
-        map.setLayoutProperty(`${highlightLayerId}-line`, "visibility", "none");
-        map.setLayoutProperty(highlightLayerId, "visibility", "none");
-        map.setLayoutProperty(`${highlightLayerId}-outline`, "visibility", "none");
+        setupHighlight();
       }
-    };
+    }, [selectedFeature, selectedLayer]);
 
-    if (!map.isStyleLoaded()) {
-      map.once("load", setupHighlight);
-    } else {
-      setupHighlight();
-    }
-  }, [selectedFeature, selectedLayer]);
-
-  // --- Handle Map Click for Georeferencing ---
+  // Handle Map Click for Georeferencing
   useEffect(() => {
     const map = mapContext.mapRef.current;
     if (!map) return;
@@ -732,15 +664,12 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
       if (gcpIndex === -1) return;
 
       const gcp = gcps[gcpIndex];
-      if (gcp.px === null || gcp.py === null) return;
 
       const { lng, lat } = e.lngLat;
 
       const newGcps = [...gcps];
       newGcps[gcpIndex] = { ...gcp, lon: lng, lat: lat };
       setGcps(newGcps);
-
-      setSelectedGcp(null);
     };
 
     map.on("click", handleGcpMapClick);
@@ -750,93 +679,175 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     };
   }, [isGeoreferencing, selectedGcp, gcps]);
 
-  // --- Handle Raster Image Safely ---
+  // TEMP GCP POINT LAYER
   useEffect(() => {
     const map = mapContext.mapRef.current;
-    if (!map || !rasterUrl) return;
+    if (!map) return;
 
-    const sourceId = "georef-raster";
-    const layerId = "georef-layer";
+    const sourceId = "temp-gcp-source";
+    const layerId = "temp-gcp-layer";
 
-    const addRaster = () => {
-      try {
+    const updateLayer = () => {
+      const features = gcps
+        .filter((g) => g.lon != null && g.lat != null)
+        .map((g) => ({
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [g.lon!, g.lat!] },
+          properties: { id: g.id },
+        }));
+
+      if (features.length === 0) {
         if (map.getLayer(layerId)) map.removeLayer(layerId);
         if (map.getSource(sourceId)) map.removeSource(sourceId);
+        return;
+      }
 
-        map.addSource(sourceId, {
-          type: "raster",
-          tiles: [rasterUrl],
-          tileSize: 256,
-        });
+      const geojson = { type: "FeatureCollection" as const, features };
+
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, { type: "geojson", data: geojson });
 
         map.addLayer({
           id: layerId,
-          type: "raster",
+          type: "circle",
           source: sourceId,
+          paint: {
+            "circle-radius": 8,
+            "circle-color": "#f59e0b", // amber for temporary
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
         });
-      } catch (err) {
-        console.error("Failed to add raster layer:", err);
-
-        if (!map.getSource(sourceId)) {
-          map.addSource(sourceId, {
-            type: "raster",
-            tiles: ["https://tile.openstreetmap.org/{z}/{x}/{y}.png"],
-            tileSize: 256,
-          });
-        }
-        if (!map.getLayer(layerId)) {
-          map.addLayer({
-            id: layerId,
-            type: "raster",
-            source: sourceId,
-          });
-        }
+      } else {
+        (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData(geojson);
       }
     };
 
     if (!map.isStyleLoaded()) {
-      map.once("load", addRaster);
+      map.once("load", updateLayer);
     } else {
-      addRaster();
+      updateLayer();
     }
-  }, [rasterUrl]);
+  }, [gcps]);
 
-  // --- Draw Handlers ---
+  // TEMP CSV POINT LAYER
+  useEffect(() => {
+    const map = mapContext.mapRef.current;
+    if (!map) return;
+
+    const sourceId = "temp-csv-source";
+    const layerId = "temp-csv-layer";
+
+    const updateLayer = () => {
+      // map csvRows with coordinates to GeoJSON features
+      const features = csvRows
+        .filter((row) => row.__coord?.lon != null && row.__coord?.lat != null)
+        .map((row) => ({
+          type: "Feature" as const,
+          geometry: {
+            type: "Point" as const,
+            coordinates: [row.__coord!.lon, row.__coord!.lat],
+          },
+          properties: { id: row.id ?? "" },
+        }));
+
+      // remove layer/source if no features
+      if (features.length === 0) {
+        if (map.getLayer(layerId)) map.removeLayer(layerId);
+        if (map.getSource(sourceId)) map.removeSource(sourceId);
+        return;
+      }
+
+      const geojson = { type: "FeatureCollection" as const, features };
+
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, { type: "geojson", data: geojson });
+
+        map.addLayer({
+          id: layerId,
+          type: "circle",
+          source: sourceId,
+          paint: {
+            "circle-radius": 6,
+            "circle-color": "#10b981", // teal for CSV points
+            "circle-stroke-color": "#ffffff",
+            "circle-stroke-width": 2,
+          },
+        });
+      } else {
+        // update existing source
+        (map.getSource(sourceId) as maplibregl.GeoJSONSource).setData(geojson);
+      }
+    };
+
+    if (!map.isStyleLoaded()) {
+      map.once("load", updateLayer);
+    } else {
+      updateLayer();
+    }
+  }, [csvRows]);
+
+  // Render Raster Image Layer
+  useEffect(() => {
+    const map = mapContext.mapRef.current;
+    if (!map) return;
+
+    const sourceId = "georef-image";
+    const layerId = "georef-image-layer";
+
+    // If URL or bounds are missing, remove existing layer/source
+    if (!rasterUrl || !rasterBounds) {
+      if (map.getLayer(layerId)) map.removeLayer(layerId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+      return;
+    }
+
+    const updateRasterLayer = () => {
+      // Remove previous layer/source if exists
+      if (map.getLayer(layerId)) map.removeLayer(layerId);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+
+      // Add the image source
+      map.addSource(sourceId, {
+        type: "image",
+        url: rasterUrl,
+        coordinates: rasterBounds,
+      });
+
+      // Add the raster layer
+      map.addLayer({
+        id: layerId,
+        type: "raster",
+        source: sourceId,
+        paint: {
+          "raster-opacity": rasterOpacity ?? 0.8,
+        },
+      });
+
+      // Make it visible according to rasterVisiblity
+      map.setLayoutProperty(layerId, "visibility", rasterVisiblity ? "visible" : "none");
+
+      // Ensure it's above the first feature layer if exists
+      if (featureLayers[0]) {
+        const firstLayerId = `layer-${featureLayers[0].layer.id}`;
+        if (map.getLayer(firstLayerId)) map.moveLayer(layerId, firstLayerId);
+      }
+    };
+
+    if (!map.isStyleLoaded()) {
+      map.once("load", updateRasterLayer);
+    } else {
+      updateRasterLayer();
+    }
+  }, [rasterUrl, rasterBounds, rasterOpacity, rasterVisiblity, featureLayers]);
+
+  // Draw Handlers
   const handleDrawPoint = () =>
     mapContext.drawRef.current?.changeMode("draw_point");
   const handleDrawLine = () =>
     mapContext.drawRef.current?.changeMode("draw_line_string");
   const handleDrawPolygon = () =>
     mapContext.drawRef.current?.changeMode("draw_polygon");
-  const handleTrash = async () => {
-  const draw = mapContext.drawRef.current;
-  const projectId = selectedProject?.id;
-
-  // 1) If user has a draw feature selected (unsaved sketch), delete it from draw
-  const selectedDrawIds = draw?.getSelectedIds?.() ?? [];
-  if (selectedDrawIds.length > 0) {
-    selectedDrawIds.forEach((id) => draw?.delete(id));
-    return;
-  }
-
-  // 2) Otherwise delete the saved feature (from Supabase) if one is selected
-  if (!selectedFeature || !projectId) return;
-
-  try {
-    await DeleteFeature({ feature_id: String(selectedFeature.id) });
-
-    // clear selection so highlight disappears immediately
-    setSelectedFeature(null);
-
-    // refresh map layers/features
-    const updated = await GetProjectLayerFeatures({ project_id: projectId });
-    setFeatureLayers(updated);
-  } catch (err) {
-    console.error("Failed to delete feature:", err);
-  }
-};
-
-
   const buttonClass = (mode: string, baseColor: string) =>
     `px-3 py-1 rounded text-white ${
       activeMode === mode ? "brightness-125" : "hover:brightness-110"

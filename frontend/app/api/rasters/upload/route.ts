@@ -34,7 +34,7 @@ export async function POST(req: Request) {
 
   const { data, error: accessError } = await supabase.storage
     .from("rasters")
-    .createSignedUrl(path, 60 * 5);
+    .createSignedUrl(path, 60 * 60 * 5); // 3 hours
 
   if (accessError) {
     return NextResponse.json(

@@ -33,12 +33,6 @@ type CSVPreviewType = {
   previewRows: Record<string, string>[];
 };
 
-type csvParseType = {
-  latCol: string,
-  lonCol: string,
-  includedCols: string
-}
-
 type csvModalProps = {
   toggleCSVModal: () => void;
   headers: string[];
@@ -808,6 +802,7 @@ const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, to
   const [selectedProject, setSelectedProject] = mContext?.selectedProjectState;  // Get Selected Project
   const [selectedLayer, setSelectedLayer] = mContext.selectedLayerState; // Current Selected Layer
   const [selectedFeature, setSelectedFeature] = mContext.selectedFeatureState; // Current Selected Feature
+  const [isGeoreferencing, setIsGeoreferencing] = mContext.isGeoreferencingState;
   const [isLoadingLayers, setIsLoadingLayers] = useState(false);
   const [layers, setLayers] = mContext.featurelayerState; // Layer Data
   const [editModalData, setEditModalData] = useState<LayerType | null>(null);
@@ -901,7 +896,7 @@ const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, to
 
   useEffect(() => {
     getFeatureLayers();
-  }, [selectedProject]);
+  }, [selectedProject, isGeoreferencing]);
 
   const deleteLayer = async (layer_id: string) => {
     try {

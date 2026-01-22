@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "react"
 import { ProjectType, LayerType, FeatureType, FeatureLayerType } from "@/types/tableTypes";
 import GeoRefComponent from "@/components/georefComponent"
 import { toast } from "react-toastify"
-import { GCPType } from "@/types/gcpTypes"
+import { CSVPoint, CSVRow, GCPType, RasterBounds } from "@/types/gcpTypes"
 
 export const EMPTY_GCPS: GCPType[] = Array.from({ length: 4 }, (_, i) => ({
   id: i + 1,
@@ -45,6 +45,10 @@ const Dashboard = () => {
   const gcpPathState = useState<GCPType[]>(EMPTY_GCPS);
   const selectedGcpPathState = useState<GCPType | null>(null); 
   const rasterUrlState = useState<string | null>(null);
+  const rasterBounds = useState<RasterBounds | null>(null);
+  const rasterVisibility = useState<boolean>(true);
+  const rasterOpacity = useState<number>(1);
+  const csvRows = useState<CSVRow[]>([]);
 
   const [_imageUrl, setImageUrl] = imageUrlState;
   const [imagePath, setImagePath] = imagePathState;
@@ -80,8 +84,8 @@ const Dashboard = () => {
 
   return (
     <MapContext.Provider value={{ 
-      mapRef, drawRef, zoomState, coordsState, selectedProjectState, selectedLayerState, selectedFeatureState, featurelayerState, 
-      isGeoreferencingState, imageUrlState, imagePathState, gcpPathState, selectedGcpPathState, rasterUrlState
+      mapRef, drawRef, zoomState, coordsState, selectedProjectState, selectedLayerState, selectedFeatureState, featurelayerState, isGeoreferencingState, 
+      imageUrlState, imagePathState, gcpPathState, selectedGcpPathState, rasterUrlState, rasterBounds, rasterVisibility, rasterOpacity, csvRows
     }}>
       <div className="h-screen w-full text-black relative overflow-hidden">
 
@@ -128,13 +132,13 @@ const Dashboard = () => {
 
         {/* Right Georeference Manager */}
         {isGeoreferencing &&
-          <div className={`absolute top-0 right-0 h-full w-100 bg-white shadow-2xl transition-transform duration-300`}>
+          <div className={`absolute top-0 right-0 h-full w-140 bg-white shadow-2xl transition-transform duration-300`}>
             <button
               onClick={cancelGeoRef}
               className={`absolute top-4 right-6 text-xl transition-transform duration-200 cursor-pointer`}>
               <i className="fa-solid fa-xmark" />
             </button>
-            <GeoRefComponent />
+            <GeoRefComponent cancelGeoRef={cancelGeoRef} />
           </div>
         }
 

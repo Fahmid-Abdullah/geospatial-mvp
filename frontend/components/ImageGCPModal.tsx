@@ -8,7 +8,7 @@ type Props = {
   imageUrl: string;
   gcpIndex: number;
   gcps: GCPType[];
-  onSetPoint: (px: number, py: number) => void;
+  onSetPoint: (px: number | null, py: number | null) => void;
   onClose: () => void;
 };
 
@@ -24,67 +24,93 @@ export default function ImageGCPModal({
     const [armed, setArmed] = useState(false);
     const armedRef = useRef(false);
 
-    useEffect(() => {
+  useEffect(() => {
     if (!viewerRef.current) return;
 
     const viewer = OpenSeadragon({
-        element: viewerRef.current,
-        prefixUrl: "/openseadragon/",
-        tileSources: { type: "image", url: imageUrl },
-        showNavigator: false,
-        showZoomControl: false,
-        showHomeControl: false,
-        showFullPageControl: false,
-        gestureSettingsMouse: { clickToZoom: false },
+      element: viewerRef.current,
+      prefixUrl: "/openseadragon/",
+      tileSources: { type: "image", url: imageUrl },
+      showNavigator: false,
+      showZoomControl: false,
+      showHomeControl: false,
+      showFullPageControl: false,
+      gestureSettingsMouse: { clickToZoom: false },
+
+      minZoomLevel: 0.5,          // smallest zoom out (lower = zoom out more)
+      maxZoomLevel: 10,           // max zoom in
+      defaultZoomLevel: 1,        // starting zoom (1 = actual image size)
+      visibilityRatio: 1,         // how much of the image must stay visible
     });
 
     osdRef.current = viewer;
 
+    // Click handler
     viewer.addHandler("canvas-click", (e) => {
-    if (!armedRef.current) return;
+      if (!armedRef.current) return;
 
-    const vp = viewer.viewport.pointFromPixel(e.position);
-    const img = viewer.viewport.viewportToImageCoordinates(vp);
+      const vp = viewer.viewport.pointFromPixel(e.position);
+      const img = viewer.viewport.viewportToImageCoordinates(vp);
 
-    onSetPoint(Math.round(img.x), Math.round(img.y));
+      onSetPoint(Math.round(img.x), Math.round(img.y));
 
-    armedRef.current = false;
-    setArmed(false);
-    onClose();
+      // Optional: add the dot immediately so it feels snappy
+      addOverlayAt(Math.round(img.x), Math.round(img.y));
     });
 
-    return () => viewer.destroy();
-    }, [imageUrl]);
+    // Draw all overlays when the image is fully loaded
+    viewer.addHandler("open", () => {
+      gcps.forEach((gcp) => {
+        if (gcp.px !== null && gcp.py !== null) {
+          addOverlayAt(gcp.px, gcp.py);
+        }
+      });
+    });
 
+  // Helper function to add a single overlay
+  const addOverlayAt = (px: number, py: number) => {
+    const dot = document.createElement("div");
+    dot.className = "w-3 h-3 flex items-center justify-center text-black";
+    dot.innerHTML = `<i class="fa-solid fa-location-dot"></i>`;
 
-  /* ---- overlays ---- */
+    viewer.addOverlay({
+      element: dot,
+      location: viewer.viewport.imageToViewportCoordinates(px, py),
+      placement: OpenSeadragon.Placement.CENTER,
+    });
+  };
+
+  return () => viewer.destroy();
+}, [imageUrl]);
+
+  // Watch for GCP updates and redraw overlays
   useEffect(() => {
     const viewer = osdRef.current;
     if (!viewer) return;
+    if (!viewer.world.getItemAt(0)) return; // wait for image
 
     viewer.clearOverlays();
-
     gcps.forEach((gcp) => {
-      if (gcp.px === null || gcp.py === null) return;
+      if (gcp.px !== null && gcp.py !== null) {
+        const dot = document.createElement("div");
+        dot.className = "w-3 h-3 flex items-center justify-start text-black";
+        dot.innerHTML = `<i class="fa-solid fa-location-dot"></i>`;
 
-      const dot = document.createElement("div");
-      dot.className =
-        "w-3 h-3 flex items-center justify-center text-black";
-      dot.innerHTML = `<i class="fa-solid fa-location-dot"></i>`;
-
-      viewer.addOverlay({
-        element: dot,
-        location: viewer.viewport.imageToViewportCoordinates(gcp.px, gcp.py),
-      });
+        viewer.addOverlay({
+          element: dot,
+          location: viewer.viewport.imageToViewportCoordinates(gcp.px, gcp.py),
+          placement: OpenSeadragon.Placement.CENTER,
+        });
+      }
     });
   }, [gcps]);
 
     const toggleArmed = () => {
-    setArmed(prev => {
-        const next = !prev;
-        armedRef.current = next;
-        return next;
-    });
+      setArmed(prev => {
+          const next = !prev;
+          armedRef.current = next;
+          return next;
+      });
     };
 
   return (
@@ -109,19 +135,19 @@ export default function ImageGCPModal({
                 armed ? "bg-green-600" : "bg-gray-500 hover:bg-gray-700"
               }`}
             >
-              Set GCP
+              Enable GCP Placement
             </button>
 
             <button
               onClick={onClose}
               className="px-3 py-1 rounded bg-red-500 text-white hover:bg-red-600"
             >
-              Cancel
+              Close
             </button>
           </div>
         </div>
 
-        <div ref={viewerRef} className="w-full h-125 cursor-grab" />
+        <div ref={viewerRef} className={`w-full h-125 ${armed ? "cursor-crosshair" : "cursor-grab"}`} />
       </div>
     </div>
   );

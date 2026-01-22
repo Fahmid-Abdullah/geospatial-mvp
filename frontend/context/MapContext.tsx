@@ -1,4 +1,4 @@
-import { GCPType } from "@/types/gcpTypes";
+import { CSVPoint, CSVRow, GCPType, RasterBounds } from "@/types/gcpTypes";
 import { ProjectType, LayerType, FeatureType, FeatureLayerType } from "@/types/tableTypes";
 import maplibregl from "maplibre-gl";
 import MapboxDraw from "maplibre-gl-draw";
@@ -70,4 +70,23 @@ export const MapContext = createContext<{
     React.Dispatch<React.SetStateAction<string | null>>
   ]
 
+  rasterBounds: [
+    RasterBounds | null,
+    React.Dispatch<React.SetStateAction<RasterBounds | null>>
+  ]
+
+  rasterVisibility: [
+    boolean,
+    React.Dispatch<React.SetStateAction<boolean>>
+  ]
+
+  rasterOpacity: [
+    number,
+    React.Dispatch<React.SetStateAction<number>>
+  ]
+
+  csvRows: [
+    CSVRow[],
+    React.Dispatch<React.SetStateAction<CSVRow[]>>
+  ]
 } | null>(null);
