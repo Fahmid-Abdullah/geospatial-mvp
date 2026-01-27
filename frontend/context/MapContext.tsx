@@ -45,6 +45,11 @@ export const MapContext = createContext<{
     React.Dispatch<React.SetStateAction<boolean>>
   ]
 
+  isCSVState: [
+    boolean,
+    React.Dispatch<React.SetStateAction<boolean>>
+  ]
+
   imageUrlState: [
     string | null,
     React.Dispatch<React.SetStateAction<string | null>>

@@ -6,14 +6,11 @@ import MapboxDraw from "maplibre-gl-draw";
 
 import { MapContext } from "@/context/MapContext";
 import { FeatureLayerType, FeatureType } from "@/types/tableTypes";
-import { CreateFeature, DeleteFeature } from "@/actions/featureActions";
+import { CreateFeature, CreateFeaturesBulk, DeleteFeature } from "@/actions/featureActions";
 import { CreateLayer, GetProjectLayerFeatures } from "@/actions/layerActions";
 
 import type { FeatureCollection, Geometry, GeoJsonProperties, Feature } from "geojson";
-
-interface MapComponentProps {
-  drawMode: boolean;
-}
+import { toast } from "react-toastify";
 
 type PendingDraw = {
   drawId: string;
@@ -48,7 +45,12 @@ const getRenderType = (fc: FeatureCollection): "point" | "line" | "polygon" | nu
   return null;
 };
 
-const MapComponent = ({ drawMode }: MapComponentProps) => {
+interface MapComponentProps {
+  drawMode: boolean;
+  refreshData: () => void;
+}
+
+const MapComponent = ({ drawMode, refreshData }: MapComponentProps) => {
   const mapContext = useContext(MapContext);
   if (!mapContext) return null;
 
@@ -70,6 +72,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
   const [featureLayers, setFeatureLayers] = mapContext.featurelayerState;
   const [selectedProject] = mapContext.selectedProjectState;
   const [selectedFeature, setSelectedFeature] = mapContext.selectedFeatureState;
+  const [selectedFeatures, setSelectedFeatures] = useState<FeatureType[]>([]);
   const [selectedLayer, setSelectedLayer] = mapContext.selectedLayerState;
   const [selectedGcp, setSelectedGcp] = mapContext.selectedGcpPathState;
   const [gcps, setGcps] = mapContext.gcpPathState;
@@ -79,6 +82,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
   const [rasterOpacity] = mapContext.rasterOpacity;
   const [csvRows, setCsvRows] = mapContext.csvRows;
   const [isGeoreferencing] = mapContext.isGeoreferencingState;
+
 
   // Derived
   const sharedKeys = useMemo(() => {
@@ -347,7 +351,7 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     };
   }, [mapContext, featureLayers]);
 
-  // fitBounds
+  // fitBounds to layer
   fitBoundsRef.current = (layerId?: string) => {
     const map = mapContext.mapRef.current;
     if (!map) return;
@@ -365,6 +369,49 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     map.fitBounds(bounds as LngLatBounds, {
       padding: { top: 50, bottom: 50, left: 600, right: 500 },
       maxZoom: 10,
+      duration: 800,
+    });
+  };
+
+  // bounds from GeoJSON features
+  const boundsFromFeatures = (features: Feature<Geometry>[]) => {
+    const bounds = new maplibregl.LngLatBounds();
+
+    const extend = (geom: Geometry) => {
+      const walk = (c: any) =>
+        Array.isArray(c[0]) ? c.forEach(walk) : bounds.extend(c);
+
+      if (geom.type === "GeometryCollection") {
+        geom.geometries.forEach(extend);
+      } else {
+        walk(geom.coordinates as any);
+      }
+    };
+
+    features.forEach(f => f.geometry && extend(f.geometry));
+    return bounds.isEmpty() ? null : bounds;
+  };
+
+  // fitBounds to selected features
+  const fitToSelectedFeatures = () => {
+    const map = mapContext.mapRef.current;
+    if (!map) return;
+
+    if (!selectedFeatures.length) return;
+
+    const bounds = boundsFromFeatures(
+      selectedFeatures.map(f => ({
+        type: "Feature",
+        geometry: f.geom,
+        properties: {},
+      }))
+    );
+
+    if (!bounds) return;
+
+    map.fitBounds(bounds as LngLatBounds, {
+      padding: { top: 50, bottom: 50, left: 600, right: 500 },
+      maxZoom: 16,
       duration: 800,
     });
   };
@@ -528,9 +575,23 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
       const clickedLayer = featureLayers.find((fl) => fl.layer.id === layerId);
 
       if (!isGeoreferencing && clickedLayer && featureId != null) {
-        setSelectedLayer(clickedLayer.layer); // highlight clicked layer
-        const clickedFeature = clickedLayer.features.find((f) => f.id === featureId);
-        if (clickedFeature) setSelectedFeature(clickedFeature);
+        setSelectedLayer(clickedLayer.layer);
+        const clickedFeature = clickedLayer.features.find(f => f.id === featureId);
+        if (!clickedFeature) return;
+
+        if (e.originalEvent.shiftKey) {
+          // MULTI SELECT
+          setSelectedFeatures(prev => {
+            const exists = prev.some(f => f.id === clickedFeature.id);
+            return exists
+              ? prev.filter(f => f.id !== clickedFeature.id)
+              : [...prev, clickedFeature];
+          });
+        } else {
+          // SINGLE SELECT
+          setSelectedFeatures([clickedFeature]);
+          setSelectedFeature(clickedFeature);
+        }
       }
     };
 
@@ -542,115 +603,166 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [featureLayers, selectedLayer, isGeoreferencing]);
 
-    // Highlight Selected Feature Layer
-    useEffect(() => {
-      const map = mapContext.mapRef.current;
-      if (!map) return;
+  // Highlight Selected Feature(s)
+  useEffect(() => {
+    const map = mapContext.mapRef.current;
+    if (!map) return;
 
-      const setupHighlight = () => {
-        const highlightSourceId = "highlight-source";
-        const highlightLayerId = "highlight-layer";
+    const SOURCE_ID = "highlight-source";
+    const LAYER_ID = "highlight-layer";
 
-        const toGeoJSONFeature = (f: FeatureType): Feature<Geometry, GeoJsonProperties> => ({
-          type: "Feature",
-          geometry: f.geom,
-          properties: f.properties ?? {},
-          id: f.id,
-        });
+    const toGeoJSONFeature = (
+      f: FeatureType
+    ): Feature<Geometry, GeoJsonProperties> => ({
+      type: "Feature",
+      geometry: f.geom,
+      properties: f.properties ?? {},
+      id: f.id,
+    });
 
-        // Create source & layers if not exists
-        if (!map.getSource(highlightSourceId)) {
-          map.addSource(highlightSourceId, {
-            type: "geojson",
-            data: { type: "FeatureCollection", features: [] },
-          });
+    const ensureHighlightLayers = () => {
+      if (map.getSource(SOURCE_ID)) return;
 
-          // Polygon fill
-          map.addLayer({
-            id: highlightLayerId,
-            type: "fill",
-            source: highlightSourceId,
-            paint: {
-              "fill-color": "#f59e0b", // stronger amber
-              "fill-opacity": 0.9,     // more solid
-            },
-          });
+      map.addSource(SOURCE_ID, {
+        type: "geojson",
+        data: {
+          type: "FeatureCollection",
+          features: [],
+        },
+      });
 
-          // Polygon outline
-          map.addLayer({
-            id: `${highlightLayerId}-outline`,
-            type: "line",
-            source: highlightSourceId,
-            paint: {
-              "line-color": "#b45309",
-              "line-width": 3,         // thicker
-            },
-          });
+      // Polygon fill
+      map.addLayer({
+        id: LAYER_ID,
+        type: "fill",
+        source: SOURCE_ID,
+        paint: {
+          "fill-color": "#f59e0b",
+          "fill-opacity": 0.9,
+        },
+      });
 
-          // Point highlight
-          map.addLayer({
-            id: `${highlightLayerId}-point`,
-            type: "circle",
-            source: highlightSourceId,
-            paint: {
-              "circle-radius": 10,
-              "circle-color": "#f59e0b",
-              "circle-stroke-color": "#ffffff",
-              "circle-stroke-width": 2,
-              "circle-opacity": 1,
-            },
-          });
+      // Polygon outline
+      map.addLayer({
+        id: `${LAYER_ID}-outline`,
+        type: "line",
+        source: SOURCE_ID,
+        paint: {
+          "line-color": "#b45309",
+          "line-width": 3,
+        },
+      });
 
-          // Line highlight
-          map.addLayer({
-            id: `${highlightLayerId}-line`,
-            type: "line",
-            source: highlightSourceId,
-            paint: {
-              "line-color": "#f59e0b",
-              "line-width": 5,  // thicker
-              "line-opacity": 1,
-            },
-          });
+      // Line highlight
+      map.addLayer({
+        id: `${LAYER_ID}-line`,
+        type: "line",
+        source: SOURCE_ID,
+        paint: {
+          "line-color": "#f59e0b",
+          "line-width": 5,
+          "line-opacity": 1,
+        },
+      });
+
+      // Point highlight
+      map.addLayer({
+        id: `${LAYER_ID}-point`,
+        type: "circle",
+        source: SOURCE_ID,
+        paint: {
+          "circle-radius": 10,
+          "circle-color": "#f59e0b",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2,
+          "circle-opacity": 1,
+        },
+      });
+    };
+
+    const hideAll = () => {
+      [
+        `${LAYER_ID}-point`,
+        `${LAYER_ID}-line`,
+        LAYER_ID,
+        `${LAYER_ID}-outline`,
+      ].forEach(id => {
+        if (map.getLayer(id)) {
+          map.setLayoutProperty(id, "visibility", "none");
         }
+      });
+    };
 
-        // Update highlight based on selected feature
-        if (selectedFeature && selectedLayer) {
-          const geoFeature = toGeoJSONFeature(selectedFeature);
-          (map.getSource(highlightSourceId) as maplibregl.GeoJSONSource).setData({
-            type: "FeatureCollection",
-            features: [geoFeature],
-          });
+    const updateHighlight = () => {
+      ensureHighlightLayers();
 
-          const geomType = selectedFeature.geom?.type;
-
-          // Visibility
-          map.setLayoutProperty(`${highlightLayerId}-point`, "visibility", geomType?.includes("Point") ? "visible" : "none");
-          map.setLayoutProperty(`${highlightLayerId}-line`, "visibility", geomType?.includes("LineString") ? "visible" : "none");
-          map.setLayoutProperty(highlightLayerId, "visibility", geomType?.includes("Polygon") ? "visible" : "none");
-          map.setLayoutProperty(`${highlightLayerId}-outline`, "visibility", geomType?.includes("Polygon") ? "visible" : "none");
-
-          // Dynamic sizing
-          if (geomType?.includes("Point")) {
-            map.setPaintProperty(`${highlightLayerId}-point`, "circle-radius", (selectedLayer.style_size ?? 8) + 2);
-          } else if (geomType?.includes("LineString")) {
-            map.setPaintProperty(`${highlightLayerId}-line`, "line-width", (selectedLayer.style_size ?? 4) + 2);
-          }
-        } else {
-          // Hide highlight if nothing selected
-          map.setLayoutProperty(`${highlightLayerId}-point`, "visibility", "none");
-          map.setLayoutProperty(`${highlightLayerId}-line`, "visibility", "none");
-          map.setLayoutProperty(highlightLayerId, "visibility", "none");
-          map.setLayoutProperty(`${highlightLayerId}-outline`, "visibility", "none");
-        }
-      };
-
-      if (!map.isStyleLoaded()) {
-        map.once("load", setupHighlight);
-      } else {
-        setupHighlight();
+      if (!selectedFeatures?.length || !selectedLayer) {
+        hideAll();
+        return;
       }
-    }, [selectedFeature, selectedLayer]);
+
+      const source = map.getSource(SOURCE_ID) as maplibregl.GeoJSONSource;
+      if (!source) return;
+
+      source.setData({
+        type: "FeatureCollection",
+        features: selectedFeatures.map(toGeoJSONFeature),
+      });
+
+      const geomTypes = new Set(
+        selectedFeatures.map(f => f.geom?.type ?? "")
+      );
+
+      const hasPoint = [...geomTypes].some(t => t.includes("Point"));
+      const hasLine = [...geomTypes].some(t => t.includes("LineString"));
+      const hasPolygon = [...geomTypes].some(t => t.includes("Polygon"));
+
+      // Visibility
+      map.setLayoutProperty(
+        `${LAYER_ID}-point`,
+        "visibility",
+        hasPoint ? "visible" : "none"
+      );
+      map.setLayoutProperty(
+        `${LAYER_ID}-line`,
+        "visibility",
+        hasLine ? "visible" : "none"
+      );
+      map.setLayoutProperty(
+        LAYER_ID,
+        "visibility",
+        hasPolygon ? "visible" : "none"
+      );
+      map.setLayoutProperty(
+        `${LAYER_ID}-outline`,
+        "visibility",
+        hasPolygon ? "visible" : "none"
+      );
+
+      // Dynamic sizing from layer style
+      if (hasPoint) {
+        map.setPaintProperty(
+          `${LAYER_ID}-point`,
+          "circle-radius",
+          (selectedLayer.style_size ?? 8) + 2
+        );
+      }
+
+      if (hasLine) {
+        map.setPaintProperty(
+          `${LAYER_ID}-line`,
+          "line-width",
+          (selectedLayer.style_size ?? 4) + 2
+        );
+      }
+    };
+
+    if (!map.isStyleLoaded()) {
+      map.once("load", updateHighlight);
+    } else {
+      updateHighlight();
+    }
+  }, [selectedFeatures, selectedLayer]);
 
   // Handle Map Click for Georeferencing
   useEffect(() => {
@@ -841,6 +953,34 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
     }
   }, [rasterUrl, rasterBounds, rasterOpacity, rasterVisiblity, featureLayers]);
 
+  const createLayerFromSelection = async () => {
+    if (!selectedProject?.id || !selectedFeatures.length) return;
+
+    const feature_ids = selectedFeatures.map(feature => feature.id);
+    
+    try {
+      if (!selectedProject) return;
+      await CreateFeaturesBulk({ project_id: selectedProject.id, feature_ids });
+
+      refreshData();
+      toast.success("Custom Layer Created!");
+    } catch (err) {
+      console.log(err);
+      toast.error("Bulk Feature Creation Error.");
+    }
+
+    setSelectedFeatures([]);
+    setSelectedFeature(null);
+
+    const updated = await GetProjectLayerFeatures({ project_id: selectedProject.id });
+    setFeatureLayers(updated);
+  };
+
+  const clearSelected = () => {
+    setSelectedFeatures([]);
+    setSelectedLayer(null);
+  }
+
   // Draw Handlers
   const handleDrawPoint = () =>
     mapContext.drawRef.current?.changeMode("draw_point");
@@ -867,17 +1007,46 @@ const MapComponent = ({ drawMode }: MapComponentProps) => {
         </p>
       </div>
 
-      <div className="absolute bottom-0 left-1/2 -translate-x-1/2 bg-white/80 px-4 py-2 rounded-t-xl flex gap-4 text-black text-sm font-medium shadow-md">
+      <div className="absolute bottom-0 left-2/3 -translate-x-1/2 bg-white/80 px-4 py-2 rounded-t-xl flex gap-4 text-black text-sm font-medium shadow-md">
         <button
           className="bg-gray-400 cursor-pointer px-2 py-1 text-white"
           onClick={() => {
             setSelectedLayer(null);
             fitBoundsRef.current();
           }}
+          title="Fit to selected layer"
         >
           <i className="fa-solid fa-expand"></i>
         </button>
+        <button
+          className="bg-gray-400 px-3 py-1 text-white rounded cursor-pointer"
+          onClick={fitToSelectedFeatures}
+          title="Fit to selected features"
+        >
+          <i className="fa-solid fa-maximize"></i>
+        </button>
       </div>
+
+      {selectedFeatures.length > 1 && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2
+                          bg-amber-500 text-white px-4 py-2 rounded-full
+                          shadow-lg text-sm font-semibold flex gap-4">
+            {selectedFeatures.length} features selected
+
+          <button
+            className="text-white cursor-pointer"
+            onClick={clearSelected}
+            title="Clear Selection">
+            <i className="fa-solid fa-x"></i>
+          </button>
+          <button
+            className="text-white cursor-pointer"
+            onClick={createLayerFromSelection}
+            title="Create new layer">
+            <i className="fa-solid fa-save"></i>
+          </button>
+        </div>
+      )}
 
       {/* Draw Buttons */}
       {drawMode && (

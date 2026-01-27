@@ -8,7 +8,9 @@ import { useEffect, useRef, useState } from "react"
 import { ProjectType, LayerType, FeatureType, FeatureLayerType } from "@/types/tableTypes";
 import GeoRefComponent from "@/components/georefComponent"
 import { toast } from "react-toastify"
-import { CSVPoint, CSVRow, GCPType, RasterBounds } from "@/types/gcpTypes"
+import { CSVRow, GCPType, RasterBounds } from "@/types/gcpTypes"
+import CsvComponent from "@/components/csvComponent"
+import { GetProjectLayerFeatures } from "@/actions/layerActions"
 
 export const EMPTY_GCPS: GCPType[] = Array.from({ length: 4 }, (_, i) => ({
   id: i + 1,
@@ -42,6 +44,7 @@ const Dashboard = () => {
   const imageUrlState = useState<string | null>(null);
   const imagePathState = useState<string | null>(null);
   const isGeoreferencingState = useState<boolean>(false);
+  const isCSVState = useState<boolean>(false);
   const gcpPathState = useState<GCPType[]>(EMPTY_GCPS);
   const selectedGcpPathState = useState<GCPType | null>(null); 
   const rasterUrlState = useState<string | null>(null);
@@ -50,9 +53,12 @@ const Dashboard = () => {
   const rasterOpacity = useState<number>(1);
   const csvRows = useState<CSVRow[]>([]);
 
+  const [selectedProject, _setSelectedProject] = selectedProjectState;
+  const [_featureLayers, setFeatureLayers] = featurelayerState;
   const [_imageUrl, setImageUrl] = imageUrlState;
-  const [imagePath, setImagePath] = imagePathState;
+  const [imagePath, _setImagePath] = imagePathState;
   const [isGeoreferencing, setIsGeoreferencing] = isGeoreferencingState;
+  const [isCSV, setIsCSV] = isCSVState;
 
   const toggleToolBarOpen = () => setToolBarOpen(prev => !prev);
   const toggleQueryComponent = () => setQueryOpen(prev => !prev);
@@ -78,25 +84,41 @@ const Dashboard = () => {
     }
   };
 
+  const cancelCSV = () => {
+    setIsCSV(false);
+  }
+
   useEffect(() => {
     if (isGeoreferencing === false) cancelGeoRef();
   }, [isGeoreferencing]);
 
+  const refreshData = async () => {
+    if (!selectedProject) return;
+    const data: FeatureLayerType[] = await GetProjectLayerFeatures({ project_id: selectedProject.id });
+    if (data) 
+        setFeatureLayers(
+          data.map(layer => ({
+            ...layer,
+            is_expanded: false
+          }))
+        );
+  }
+
   return (
     <MapContext.Provider value={{ 
       mapRef, drawRef, zoomState, coordsState, selectedProjectState, selectedLayerState, selectedFeatureState, featurelayerState, isGeoreferencingState, 
-      imageUrlState, imagePathState, gcpPathState, selectedGcpPathState, rasterUrlState, rasterBounds, rasterVisibility, rasterOpacity, csvRows
+      imageUrlState, imagePathState, gcpPathState, selectedGcpPathState, rasterUrlState, rasterBounds, rasterVisibility, rasterOpacity, csvRows, isCSVState
     }}>
       <div className="h-screen w-full text-black relative overflow-hidden">
 
         {/* Left Toolbar */}
         <div className={`absolute top-0 left-0 z-50 h-full w-125 bg-white shadow-2xl transition-transform duration-300
-          ${!isGeoreferencing && toolBarOpen ? "translate-x-0" : "-translate-x-full"}`}>
-          <ToolBarComponent drawMode={drawMode} toggleDrawMode={toggleDrawMode} />
+          ${!isGeoreferencing && !isCSV && toolBarOpen ? "translate-x-0" : "-translate-x-full"}`}>
+          <ToolBarComponent drawMode={drawMode} toggleDrawMode={toggleDrawMode} refreshData={refreshData} />
         </div>
 
         {/* Left Toggle Button */}
-        {!isGeoreferencing &&         
+        {!isGeoreferencing && !isCSV && 
           <button
             className={`absolute top-3 z-50 text-2xl bg-gray-300 px-5 py-4 rounded-r-full
               hover:text-3xl transition-transform duration-300 ease-in-out
@@ -109,17 +131,17 @@ const Dashboard = () => {
 
         {/* Map Component */}
         <div className="absolute inset-0 h-full">
-          <MapComponent drawMode={drawMode}  />
+          <MapComponent drawMode={drawMode} refreshData={refreshData} />
         </div>
 
         {/* Right Query Manager */}
         <div className={`absolute top-0 right-0 h-full w-100 bg-white shadow-2xl transition-transform duration-300
-          ${!isGeoreferencing && queryOpen ? "translate-x-0" : "translate-x-full"}`}>
+          ${!isGeoreferencing && !isCSV && queryOpen ? "translate-x-0" : "translate-x-full"}`}>
           <QueryComponent />
         </div>
 
         {/* Right Toggle Button */}
-        {!isGeoreferencing && 
+        {!isGeoreferencing && !isCSV && 
           <button
             className={`absolute top-3 z-50 text-2xl bg-white px-5 py-4 rounded-l-full
               hover:text-3xl transition-transform duration-300 ease-in-out
@@ -139,6 +161,18 @@ const Dashboard = () => {
               <i className="fa-solid fa-xmark" />
             </button>
             <GeoRefComponent cancelGeoRef={cancelGeoRef} />
+          </div>
+        }
+
+        {/* Right CSV Manager */}
+        {isCSV &&
+          <div className={`absolute top-0 right-0 h-full w-140 bg-white shadow-2xl transition-transform duration-300`}>
+            <button
+              onClick={cancelCSV}
+              className={`absolute top-4 right-6 text-xl transition-transform duration-200 cursor-pointer`}>
+              <i className="fa-solid fa-xmark" />
+            </button>
+            <CsvComponent cancelCsv={cancelCSV} />
           </div>
         }
 

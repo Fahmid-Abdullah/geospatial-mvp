@@ -1,7 +1,8 @@
 "use server";
 import { supabase } from "@/lib/supabaseClient";
-import { FeatureType } from "@/types/tableTypes";
+import { FeatureType, LayerType } from "@/types/tableTypes";
 import type { Geometry, GeoJsonProperties } from "geojson";
+import { CreateLayer } from "./layerActions";
 
 export async function GetLayerFeatures({ layer_id } : { layer_id: string }): Promise<FeatureType[]> {
   const { data, error } = await supabase
@@ -36,6 +37,25 @@ export async function CreateFeature({ layer_id, feature_properties, feature_geom
     }
 
     return data ?? null
+}
+
+export async function CreateFeaturesBulk({ project_id, feature_ids } : { project_id: string, feature_ids: string[] }) : Promise<LayerType | null> {
+  if (!feature_ids.length) return null;
+
+  const layer = await CreateLayer({ project_id, layer_name: "New CSV Layer" });
+  if (!layer) throw new Error("Layer Create Error");
+
+  const { error } = await supabase.rpc("create_custom_layer", {
+    new_layer_id: layer.id,
+    feature_ids: feature_ids
+  });
+
+  if (error) {
+    console.error("Bulk Feature Insert Error:", error);
+    throw error;
+  }
+
+  return layer;
 }
 
 export async function UpdateFeature({ feature_id, feature_properties, feature_geom } : 

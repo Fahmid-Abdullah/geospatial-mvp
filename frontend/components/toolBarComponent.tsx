@@ -239,6 +239,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
   const [_imageUrl, setImageUrl] = mContext.imageUrlState;
   const [_imagePath, setImagePath] = mContext.imagePathState;
   const [_isGeoreferencing, setIsGeoreferencing] = mContext.isGeoreferencingState;
+  const [_isCSV, setIsCSV] = mContext.isCSVState;
 
   const [csvPreviewModal, setCSVPreviewModal] = useState<boolean>(false);
   const [csvData, setCsvData] = useState<CSVPreviewType>();
@@ -423,7 +424,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
               htmlFor="upload-csv"
           >
             <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
-              CSV
+              CSV (with coordinates)
             </span>
             <i className="fa-solid fa-file-csv" />
             <input
@@ -434,6 +435,33 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
               onChange={uploadCSV}
               className="hidden"
             />
+          </label>
+
+          {/* CSV without coords */}
+          <label
+            onClick={() => setIsCSV(true)}
+            className={`relative inline-flex items-center justify-center gap-2
+              border rounded-xl px-4 py-2 transition-all duration-200
+              ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
+              htmlFor="upload-csv-no-coords">
+            <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
+              CSV (without coordinates)
+            </span>
+            <i className="fa-solid fa-file-csv" />
+          </label>
+
+
+          {/* CSV with addresses */}
+          <label
+            className={`relative inline-flex items-center justify-center gap-2
+              border rounded-xl px-4 py-2 transition-all duration-200
+              ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
+              htmlFor="upload-csv"
+          >
+            <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
+              CSV (with addresses)
+            </span>
+            <i className="fa-solid fa-file-csv" />
           </label>
 
           {/* PNG */}
@@ -456,6 +484,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
               className="hidden"
             />
           </label>
+
         </div>
 
         {/* Status */}
@@ -789,7 +818,13 @@ const SortableItem = React.memo(({
     </div>
   )});
 
-const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, toggleDrawMode: () => void }) => {
+type ToolbarProps = {
+  drawMode: boolean;
+  toggleDrawMode: () => void;
+  refreshData: () => void;
+}
+
+const ToolBarComponent = ({ drawMode, toggleDrawMode, refreshData } : ToolbarProps) => {
   const [profileDropDown, setProfileDropDown] = useState<boolean>(false); // Profile dropdown state
   const [uploadModal, setUploadModal] = useState<boolean>(false);
   const [editModal, setEditModal] = useState<boolean>(false);
@@ -802,7 +837,8 @@ const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, to
   const [selectedProject, setSelectedProject] = mContext?.selectedProjectState;  // Get Selected Project
   const [selectedLayer, setSelectedLayer] = mContext.selectedLayerState; // Current Selected Layer
   const [selectedFeature, setSelectedFeature] = mContext.selectedFeatureState; // Current Selected Feature
-  const [isGeoreferencing, setIsGeoreferencing] = mContext.isGeoreferencingState;
+  const [isGeoreferencing, _setIsGeoreferencing] = mContext.isGeoreferencingState;
+  const [isCSV, _setIsCSV] = mContext.isCSVState;
   const [isLoadingLayers, setIsLoadingLayers] = useState(false);
   const [layers, setLayers] = mContext.featurelayerState; // Layer Data
   const [editModalData, setEditModalData] = useState<LayerType | null>(null);
@@ -874,16 +910,7 @@ const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, to
     try {
       setIsLoadingLayers(true);
 
-      const data: FeatureLayerType[] = await GetProjectLayerFeatures({ project_id: selectedProject.id });
-
-      if (data) {
-        setLayers(
-          data.map(layer => ({
-            ...layer,
-            is_expanded: false
-          }))
-        );
-      }
+      refreshData();
 
       setUploadModal(false);
     } catch (error) {
@@ -896,7 +923,7 @@ const ToolBarComponent = ({ drawMode, toggleDrawMode } : { drawMode: boolean, to
 
   useEffect(() => {
     getFeatureLayers();
-  }, [selectedProject, isGeoreferencing]);
+  }, [selectedProject, isGeoreferencing, isCSV]);
 
   const deleteLayer = async (layer_id: string) => {
     try {
