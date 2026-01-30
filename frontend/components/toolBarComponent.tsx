@@ -41,15 +41,17 @@ type csvModalProps = {
   setStatus: Dispatch<SetStateAction<string>>;
   toggleUploadModal: () => void;
   getFeatureLayers: () => void;
+  csvType: "coordinates" | "addresses" | null
 };
 
-const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggleUploadModal, getFeatureLayers }: csvModalProps) => {
+const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggleUploadModal, getFeatureLayers, csvType }: csvModalProps) => {
   const mContext = useContext(MapContext); // Get Map Context
   if (!mContext) return;
   const [selectedProject, _setSelectedProject] = mContext?.selectedProjectState;
 
   const [latCol, setLatCol] = useState<string>("");
   const [lonCol, setLonCol] = useState<string>("");
+  const [addressCol, setAddressCol] = useState<string>("");
   const [includedCols, setIncludedCols] = useState<Set<string>>(
     new Set(headers)
   );
@@ -64,9 +66,18 @@ const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggl
   };
 
   const parseCSV = async () => {
-    if (!latCol || !lonCol) {
-      toast.error("Please select latitude and longitude columns.");
-      return;
+    if (csvType === "coordinates") {
+      if (!latCol || !lonCol) {
+        toast.error("Please select latitude and longitude columns.");
+        return;
+      }
+    }
+
+    if (csvType === "addresses" && !addressCol) {
+      if (!addressCol) {
+        toast.error("Please select latitude and longitude columns.");
+        return;
+      }
     }
 
     setLoading(true);
@@ -80,19 +91,38 @@ const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggl
       // Read CSV file as text
       const text = await file.text();
 
+      let res;
+
       // Parse CSV
-      const res = await fetch("/api/csv/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          csv_text: text,
-          latCol,
-          lonCol,
-          includedCols: Array.from(includedCols),
-          project_id: selectedProject?.id,
-          fileName: file.name,
-        }),
-      });
+      if (csvType === "coordinates") {
+        res = await fetch("/api/csv/process", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            csv_text: text,
+            latCol,
+            lonCol,
+            includedCols: Array.from(includedCols),
+            project_id: selectedProject?.id,
+            fileName: file.name,
+          }),
+        });
+      } else if (csvType === "addresses") {
+        res = await fetch("/api/csv/convertLatLon", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            csv_text: text,
+            addressCol,
+            includedCols: Array.from(includedCols),
+            project_id: selectedProject?.id,
+            fileName: file.name,
+          }),
+        });
+      } else {
+        toast.error("Invalid CSV Type.");
+        return;
+      }
 
       const data = await res.json();
 
@@ -130,35 +160,54 @@ const CSVModal = ({ toggleCSVModal, headers, previewRows, file, setStatus, toggl
         <h2 className="text-xl font-bold mb-4">CSV Preview & Mapping</h2>
 
         {/* Lat / Lon selectors */}
-        <div className="grid grid-cols-2 gap-4 mb-4">
-          <div>
-            <label className="text-sm text-gray-500">Latitude column</label>
-            <select
-              value={latCol}
-              onChange={e => setLatCol(e.target.value)}
-              className="w-full border rounded px-2 py-1"
-            >
-              <option value="">Select</option>
-              {headers.map(h => (
-                <option key={h} value={h}>{h}</option>
-              ))}
-            </select>
-          </div>
+        {csvType === "coordinates" && (
+          <div className="grid grid-cols-2 gap-4 mb-4">
+            <div>
+              <label className="text-sm text-gray-500">Latitude column</label>
+              <select
+                value={latCol}
+                onChange={e => setLatCol(e.target.value)}
+                className="w-full border rounded px-2 py-1"
+              >
+                <option value="">Select</option>
+                {headers.map(h => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
 
-          <div>
-            <label className="text-sm text-gray-500">Longitude column</label>
-            <select
-              value={lonCol}
-              onChange={e => setLonCol(e.target.value)}
-              className="w-full border rounded px-2 py-1"
-            >
-              <option value="">Select</option>
-              {headers.map(h => (
-                <option key={h} value={h}>{h}</option>
-              ))}
-            </select>
+            <div>
+              <label className="text-sm text-gray-500">Longitude column</label>
+              <select
+                value={lonCol}
+                onChange={e => setLonCol(e.target.value)}
+                className="w-full border rounded px-2 py-1"
+              >
+                <option value="">Select</option>
+                {headers.map(h => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* Address selector */}
+        {csvType === "addresses" && (
+            <div>
+              <label className="text-sm text-gray-500">Address column</label>
+              <select
+                value={addressCol}
+                onChange={e => setAddressCol(e.target.value)}
+                className="w-full border rounded px-2 py-1"
+              >
+                <option value="">Select</option>
+                {headers.map(h => (
+                  <option key={h} value={h}>{h}</option>
+                ))}
+              </select>
+            </div>
+        )}
 
         {/* Column toggles */}
         <div className="mb-4">
@@ -243,6 +292,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
 
   const [csvPreviewModal, setCSVPreviewModal] = useState<boolean>(false);
   const [csvData, setCsvData] = useState<CSVPreviewType>();
+  const [csvType, setCSVType] = useState<"coordinates" | "addresses" | null>(null);
 
   const toggleCSVModal = () => setCSVPreviewModal(prev => !prev);
 
@@ -416,23 +466,26 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
             />
           </label>
 
-          {/* CSV */}
+          {/* CSV with coordinates */}
           <label
             className={`relative inline-flex items-center justify-center gap-2
               border rounded-xl px-4 py-2 transition-all duration-200
               ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
-              htmlFor="upload-csv"
+              htmlFor="upload-csv-coords"
           >
             <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
               CSV (with coordinates)
             </span>
             <i className="fa-solid fa-file-csv" />
             <input
-              id="upload-csv"
+              id="upload-csv-coords"
               type="file"
               disabled={loading}
               accept=".csv"
-              onChange={uploadCSV}
+              onChange={(e) => {
+                setCSVType("coordinates");
+                uploadCSV(e);
+              }}
               className="hidden"
             />
           </label>
@@ -450,18 +503,28 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
             <i className="fa-solid fa-file-csv" />
           </label>
 
-
           {/* CSV with addresses */}
           <label
             className={`relative inline-flex items-center justify-center gap-2
               border rounded-xl px-4 py-2 transition-all duration-200
               ${loading ? disabledStyles : "hover:text-gray-500 cursor-pointer"}`}
-              htmlFor="upload-csv"
+              htmlFor="upload-csv-addresses"
           >
             <span className="absolute -top-2 left-4 px-2 bg-white text-xs">
               CSV (with addresses)
             </span>
             <i className="fa-solid fa-file-csv" />
+            <input
+              id="upload-csv-addresses"
+              type="file"
+              disabled={loading}
+              accept=".csv"
+              onChange={(e) => {
+                setCSVType("addresses");
+                uploadCSV(e);
+              }}
+              className="hidden"
+            />
           </label>
 
           {/* PNG */}
@@ -504,6 +567,7 @@ const UploadModal = ({ project_id, toggleUploadModal, getFeatureLayers }: upload
           setStatus={setStatusText}
           toggleUploadModal={toggleUploadModal}
           getFeatureLayers={getFeatureLayers}
+          csvType={csvType}
         />
       )}
     </div>
